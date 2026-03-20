@@ -219,7 +219,11 @@ async function executeClaudeNative(prompt: string, options: RalphLoopOptions): P
   console.log(chalk.dim('\n[Claude Native Mode - Processing in current session]\n'));
 
   // Write prompt to a temp file that Claude can read
-  const promptFile = path.join(options.cd, '.ralph-prompt.md');
+  const workDir = path.resolve(options.cd);
+  const promptFile = path.resolve(workDir, '.ralph-prompt.md');
+  if (!promptFile.startsWith(workDir + path.sep) && promptFile !== workDir) {
+    throw new Error('Path traversal detected: prompt file would escape working directory');
+  }
   fs.writeFileSync(promptFile, `# Ralph Loop Iteration\n\n${prompt}\n\n---\n\nPlease complete this task. When finished, include the completion promise in your response.`);
 
   // Return instruction for Claude

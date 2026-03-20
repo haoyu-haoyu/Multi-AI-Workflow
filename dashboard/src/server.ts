@@ -27,6 +27,7 @@ export class DashboardServer {
   private mawBridge: MAWBridge;
   private config: DashboardConfig;
   private clients: Set<WebSocket> = new Set();
+  private wsErrorCounts = new WeakMap<WebSocket, number>();
 
   constructor(config: Partial<DashboardConfig> = {}) {
     this.config = {
@@ -93,8 +94,11 @@ export class DashboardServer {
    * Start the server
    */
   async start(): Promise<void> {
-    // Initialize MAW bridge
-    await this.mawBridge.initialize();
+    // Initialize MAW bridge with timeout
+    await Promise.race([
+      this.mawBridge.initialize(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Bridge init timed out')), 30000))
+    ]).catch(err => console.warn('[Dashboard] Bridge init:', err.message));
 
     return new Promise((resolve) => {
       const server = createServer(this.app);
@@ -109,9 +113,16 @@ export class DashboardServer {
         ws.on('message', (message: Buffer) => {
           try {
             const data = JSON.parse(message.toString());
+            this.wsErrorCounts.set(ws, 0);
             this.handleWebSocketMessage(ws, data);
           } catch (e) {
+            const count = (this.wsErrorCounts.get(ws) || 0) + 1;
+            this.wsErrorCounts.set(ws, count);
             console.error('Invalid WebSocket message:', e);
+            if (count >= 3) {
+              console.warn('Closing WebSocket due to repeated invalid messages');
+              ws.close(1003, 'Too many invalid messages');
+            }
           }
         });
 

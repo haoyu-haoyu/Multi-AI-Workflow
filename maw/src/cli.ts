@@ -16,6 +16,28 @@ const __dirname = dirname(__filename);
 const packageJsonPath = join(__dirname, '..', 'package.json');
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
 
+const MAX_INPUT_LENGTH = 10000;
+
+function validateTaskInput(input: string, fieldName: string = 'task'): void {
+  if (!input || input.trim().length === 0) {
+    console.error(`Error: ${fieldName} cannot be empty.`);
+    process.exit(1);
+  }
+  if (input.length > MAX_INPUT_LENGTH) {
+    console.error(`Error: ${fieldName} exceeds maximum length of ${MAX_INPUT_LENGTH} characters.`);
+    process.exit(1);
+  }
+}
+
+function validatePositiveInt(value: string, name: string, min: number = 1, max: number = 100000): number {
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed) || parsed < min || parsed > max) {
+    console.error(`Error: ${name} must be between ${min} and ${max}.`);
+    process.exit(1);
+  }
+  return parsed;
+}
+
 const program = new Command();
 
 program
@@ -36,6 +58,7 @@ workflowCmd
   .description('Level 1: Instant execution, no artifacts')
   .option('--cd <dir>', 'Working directory', process.cwd())
   .action(async (task: string, options: { cd: string }) => {
+    validateTaskInput(task);
     const { executeLiteWorkflow } = await import('./commands/workflow.js');
     await executeLiteWorkflow(task, options);
   });
@@ -46,6 +69,7 @@ workflowCmd
   .option('-l, --level <level>', 'Workflow level (lite-plan|plan|tdd-plan)', 'plan')
   .option('--cd <dir>', 'Working directory', process.cwd())
   .action(async (task: string, options: { level: string; cd: string }) => {
+    validateTaskInput(task);
     const { executePlanWorkflow } = await import('./commands/workflow.js');
     await executePlanWorkflow(task, options);
   });
@@ -57,6 +81,7 @@ workflowCmd
   .option('-r, --roles <roles>', 'Comma-separated roles', 'architect,developer,reviewer')
   .option('--cd <dir>', 'Working directory', process.cwd())
   .action(async (topic: string, options: { parallel: boolean; roles: string; cd: string }) => {
+    validateTaskInput(topic, 'topic');
     const { executeBrainstorm } = await import('./commands/workflow.js');
     await executeBrainstorm(topic, options);
   });
@@ -67,6 +92,7 @@ workflowCmd
   .option('-p, --parallel', 'Enable parallel analysis', true)
   .option('--cd <dir>', 'Working directory', process.cwd())
   .action(async (task: string, options: { parallel: boolean; cd: string }) => {
+    validateTaskInput(task);
     const { executeFivePhase } = await import('./commands/workflow.js');
     await executeFivePhase(task, options);
   });
@@ -86,15 +112,16 @@ workflowCmd
   .option('-v, --verbose', 'Show detailed output', false)
   .option('-d, --delay <ms>', 'Delay between iterations (ms)', '1000')
   .action(async (prompt: string, options) => {
+    validateTaskInput(prompt, 'prompt');
     const { executeRalphLoop } = await import('./commands/ralph.js');
     await executeRalphLoop(prompt, {
-      maxIterations: parseInt(options.maxIterations, 10),
+      maxIterations: validatePositiveInt(options.maxIterations, 'max-iterations', 1, 100000),
       completionPromise: options.completionPromise,
       ai: options.ai,
       cd: options.cd,
       sandbox: options.sandbox,
       verbose: options.verbose,
-      delay: parseInt(options.delay, 10),
+      delay: validatePositiveInt(options.delay, 'delay', 0, 100000),
     });
   });
 
@@ -123,6 +150,7 @@ program
   .option('-s, --sandbox <level>', 'Sandbox level', 'read-only')
   .option('--prefer <ai>', 'Preferred AI if ambiguous')
   .action(async (task: string, options) => {
+    validateTaskInput(task);
     const { semanticRoute } = await import('./commands/delegate.js');
     await semanticRoute(task, options);
   });
@@ -135,6 +163,7 @@ program
   .option('--cd <dir>', 'Working directory', process.cwd())
   .option('--stream', 'Enable streaming output', false)
   .action(async (ai: string, task: string, options) => {
+    validateTaskInput(task);
     const { delegateToAI } = await import('./commands/delegate.js');
     await delegateToAI(ai, task, options);
   });
@@ -146,6 +175,7 @@ program
   .option('--executors <ais>', 'Comma-separated executor AIs', 'codex,gemini')
   .option('-p, --parallel', 'Execute in parallel', true)
   .action(async (task: string, options) => {
+    validateTaskInput(task);
     const { executeCollaboration } = await import('./commands/delegate.js');
     await executeCollaboration(task, options);
   });

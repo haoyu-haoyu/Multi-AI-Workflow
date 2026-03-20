@@ -6,8 +6,8 @@
  * and custom user skills.
  */
 
-import { existsSync, readdirSync, readFileSync, mkdirSync, cpSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync, readdirSync, readFileSync, mkdirSync, cpSync, realpathSync, lstatSync } from 'fs';
+import { join, dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 export type SkillType = 'built-in' | 'ai-bridge' | 'custom';
@@ -63,6 +63,15 @@ export interface SkillInstallOptions {
   skills?: string[];
   /** Custom installation path */
   targetPath?: string;
+}
+
+function validatePathWithinBase(targetPath: string, baseDir: string): void {
+  const realBase = resolve(baseDir);
+  const realTarget = resolve(targetPath);
+  const rel = relative(realBase, realTarget);
+  if (rel.startsWith('..') || resolve(realBase, rel) !== realTarget) {
+    throw new Error(`Path traversal rejected: ${targetPath} escapes ${baseDir}`);
+  }
 }
 
 /**
@@ -366,6 +375,13 @@ export class SkillRegistry {
       if (existsSync(targetPath)) {
         const { rmSync } = await import('fs');
         rmSync(targetPath, { recursive: true });
+      }
+
+      // Validate paths before copying
+      validatePathWithinBase(targetPath, targetBase);
+      const sourceStat = lstatSync(source);
+      if (sourceStat.isSymbolicLink()) {
+        throw new Error(`Refusing to install from symlink source: ${source}`);
       }
 
       // Copy skill

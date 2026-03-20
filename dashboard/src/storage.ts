@@ -47,6 +47,16 @@ export interface AIExecutionLog {
   error?: string;
 }
 
+const CURRENT_SCHEMA_VERSION = 1;
+
+interface Migration {
+  version: number;
+  description: string;
+  up: string;
+}
+
+const MIGRATIONS: Migration[] = [];
+
 export class DashboardStorage {
   private db: Database.Database;
   private dbPath: string;
@@ -58,12 +68,24 @@ export class DashboardStorage {
     }
 
     this.dbPath = path.join(storageDir, 'dashboard.db');
-    this.db = new Database(this.dbPath);
-
-    this.initTables();
+    try {
+      this.db = new Database(this.dbPath);
+      this.initTables();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Failed to initialize dashboard database at ${this.dbPath}: ${msg}`);
+    }
   }
 
   private initTables(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT DEFAULT (datetime('now')),
+        description TEXT
+      )
+    `);
+
     // Sessions table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -124,6 +146,33 @@ export class DashboardStorage {
       CREATE INDEX IF NOT EXISTS idx_ai_session ON ai_logs(session_id);
       CREATE INDEX IF NOT EXISTS idx_session_status ON sessions(status);
     `);
+
+    this.runMigrations();
+  }
+
+  private runMigrations(): void {
+    const currentVersion = this.getSchemaVersion();
+    for (const migration of MIGRATIONS.filter(m => m.version > currentVersion)) {
+      try {
+        this.db.exec(migration.up);
+        this.db.prepare('INSERT INTO schema_version (version, description) VALUES (?, ?)').run(migration.version, migration.description);
+      } catch (error) {
+        console.error(`[Storage] Migration v${migration.version} failed:`, error);
+        throw error;
+      }
+    }
+    if (currentVersion === 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)').run(CURRENT_SCHEMA_VERSION, 'Initial schema');
+    }
+  }
+
+  private getSchemaVersion(): number {
+    try {
+      const row = this.db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number | null } | undefined;
+      return row?.version || 0;
+    } catch {
+      return 0;
+    }
   }
 
   // ============= Sessions =============

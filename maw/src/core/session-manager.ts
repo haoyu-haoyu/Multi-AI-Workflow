@@ -6,7 +6,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -83,6 +83,12 @@ export class SessionManager {
   private workflowDir: string;
   private taskDir: string;
 
+  private atomicWriteFileSync(filePath: string, data: string): void {
+    const tmpPath = filePath + '.tmp';
+    writeFileSync(tmpPath, data);
+    renameSync(tmpPath, filePath);
+  }
+
   constructor(projectRoot: string = process.cwd()) {
     this.persistPath = join(projectRoot, '.maw', 'sessions.json');
     this.globalPersistPath = join(homedir(), '.maw', 'sessions.json');
@@ -122,7 +128,7 @@ export class SessionManager {
             this.sessions.set(id, session as UnifiedSession);
           }
         } catch {
-          // Continue to next path or start fresh
+          console.warn('[SessionManager] Warning: Failed to parse sessions from ' + path + '. Starting fresh.');
         }
       }
     }
@@ -136,10 +142,10 @@ export class SessionManager {
     const jsonData = JSON.stringify(data, null, 2);
 
     // Save to project-specific location
-    writeFileSync(this.persistPath, jsonData);
+    this.atomicWriteFileSync(this.persistPath, jsonData);
 
     // Also save to global location for dashboard access
-    writeFileSync(this.globalPersistPath, jsonData);
+    this.atomicWriteFileSync(this.globalPersistPath, jsonData);
   }
 
   /**

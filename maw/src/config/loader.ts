@@ -223,14 +223,24 @@ function applyEnvOverrides(config: Partial<MAWConfig>): Partial<MAWConfig> {
 
   // Dashboard port
   if (process.env.MAW_DASHBOARD_PORT) {
-    if (!newConfig.dashboard) newConfig.dashboard = {};
-    (newConfig.dashboard as Record<string, unknown>).port = parseInt(process.env.MAW_DASHBOARD_PORT, 10);
+    const port = parseInt(process.env.MAW_DASHBOARD_PORT, 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      console.warn('[Config] Invalid MAW_DASHBOARD_PORT, must be 1-65535. Using default.');
+    } else {
+      if (!newConfig.dashboard) newConfig.dashboard = {};
+      (newConfig.dashboard as Record<string, unknown>).port = port;
+    }
   }
 
   // Security settings
   if (process.env.MAW_SANDBOX_LEVEL) {
-    if (!newConfig.security) newConfig.security = {};
-    (newConfig.security as Record<string, unknown>).defaultSandbox = process.env.MAW_SANDBOX_LEVEL;
+    const allowed = ['read-only', 'workspace-write', 'danger-full-access'];
+    if (!allowed.includes(process.env.MAW_SANDBOX_LEVEL)) {
+      console.warn('[Config] Invalid MAW_SANDBOX_LEVEL. Using default.');
+    } else {
+      if (!newConfig.security) newConfig.security = {};
+      (newConfig.security as Record<string, unknown>).defaultSandbox = process.env.MAW_SANDBOX_LEVEL;
+    }
   }
 
   return newConfig as Partial<MAWConfig>;

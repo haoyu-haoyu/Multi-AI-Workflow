@@ -10,7 +10,7 @@ import { BaseAIAdapter, AIExecutionResult, SandboxLevel } from '../adapters/base
 import { SkillRegistry } from './skill-registry.js';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, relative } from 'path';
 
 export type PhaseType = 'planning' | 'execution' | 'review' | 'delegation';
 export type AIRole = 'claude' | 'codex' | 'gemini' | 'litellm' | 'auto';
@@ -120,6 +120,16 @@ export interface WorkflowResult {
   error?: string;
 }
 
+function safePathInDir(baseDir: string, filename: string): string {
+  const candidate = join(baseDir, filename);
+  const resolved = resolve(candidate);
+  const resolvedBase = resolve(baseDir);
+  if (!resolved.startsWith(resolvedBase + '/') && resolved !== resolvedBase) {
+    throw new Error(`Path traversal detected: ${filename} escapes ${baseDir}`);
+  }
+  return resolved;
+}
+
 /**
  * Workflow Engine - Orchestrates multi-AI task execution
  */
@@ -221,21 +231,29 @@ export class WorkflowEngine {
   ): Promise<{ success: boolean; tasks: TaskRecord[]; error?: string }> {
     const tasks: TaskRecord[] = [];
 
-    switch (phase.type) {
-      case 'planning':
-        return this.executePlanningPhase(phase, session, context);
+    try {
+      switch (phase.type) {
+        case 'planning':
+          return this.executePlanningPhase(phase, session, context);
 
-      case 'execution':
-        return this.executeExecutionPhase(phase, session, context);
+        case 'execution':
+          return this.executeExecutionPhase(phase, session, context);
 
-      case 'delegation':
-        return this.executeDelegationPhase(phase, session, context);
+        case 'delegation':
+          return this.executeDelegationPhase(phase, session, context);
 
-      case 'review':
-        return this.executeReviewPhase(phase, session, context);
+        case 'review':
+          return this.executeReviewPhase(phase, session, context);
 
-      default:
-        return { success: true, tasks };
+        default:
+          return { success: true, tasks };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        tasks: [],
+        error: error instanceof Error ? error.message : 'Unknown phase execution error',
+      };
     }
   }
 
@@ -276,7 +294,7 @@ export class WorkflowEngine {
         taskRecord.result = result.content;
 
         // Save plan to .task directory (CCW pattern)
-        const planPath = join(this.taskDir, `IMPL_PLAN-${session.mawSessionId}.json`);
+        const planPath = safePathInDir(this.taskDir, `IMPL_PLAN-${session.mawSessionId}.json`);
         writeFileSync(planPath, JSON.stringify({
           sessionId: session.mawSessionId,
           plan: result.content,
