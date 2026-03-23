@@ -32,6 +32,24 @@ export interface WorkflowPhase {
   config?: Record<string, unknown>;
 }
 
+/**
+ * Accumulated outputs from completed phases, keyed by output name.
+ * Each phase declares `outputs: ['plan', 'analysis']` and the engine
+ * stores the phase result content under those keys so subsequent phases
+ * can reference them via `inputs: ['plan']`.
+ */
+export interface PhaseOutputs {
+  [key: string]: string;
+}
+
+export interface PhaseResult {
+  success: boolean;
+  tasks: TaskRecord[];
+  /** Content produced by this phase, available to subsequent phases */
+  content?: string;
+  error?: string;
+}
+
 export interface AIAssignment {
   /** AI responsible for planning */
   planner: AIRole;
@@ -188,16 +206,45 @@ export class WorkflowEngine {
     });
 
     const tasks: TaskRecord[] = [];
+    const phaseOutputs: PhaseOutputs = {};
 
     try {
-      // Execute each phase
-      for (const phase of workflow.phases) {
-        const phaseResult = await this.executePhase(phase, session, context);
-        tasks.push(...phaseResult.tasks);
+      // Group phases into execution layers based on dependencies
+      const layers = this.computeExecutionLayers(workflow.phases);
+      const maxConcurrency = workflow.parallelConfig?.maxConcurrency ?? 1;
 
-        // Stop if phase failed and it's critical
-        if (!phaseResult.success && phase.type !== 'review') {
-          throw new Error(`Phase ${phase.name} failed: ${phaseResult.error}`);
+      for (const layer of layers) {
+        if (layer.length === 1 || maxConcurrency <= 1) {
+          // Sequential execution
+          for (const phase of layer) {
+            const phaseResult = await this.executePhase(phase, session, context, phaseOutputs);
+            tasks.push(...phaseResult.tasks);
+            // Store outputs for subsequent phases
+            if (phaseResult.success && phaseResult.content) {
+              for (const outputKey of phase.outputs) {
+                phaseOutputs[outputKey] = phaseResult.content;
+              }
+            }
+            if (!phaseResult.success && phase.type !== 'review') {
+              throw new Error(`Phase ${phase.name} failed: ${phaseResult.error}`);
+            }
+          }
+        } else {
+          // Parallel execution for independent phases
+          const concurrencyLimit = Math.min(maxConcurrency, layer.length);
+          const results = await this.executeParallel(layer, session, context, phaseOutputs, concurrencyLimit);
+          for (let i = 0; i < layer.length; i++) {
+            const result = results[i];
+            tasks.push(...result.tasks);
+            if (result.success && result.content) {
+              for (const outputKey of layer[i].outputs) {
+                phaseOutputs[outputKey] = result.content;
+              }
+            }
+            if (!result.success && layer[i].type !== 'review') {
+              throw new Error(`Phase ${layer[i].name} failed: ${result.error}`);
+            }
+          }
         }
       }
 
@@ -222,31 +269,99 @@ export class WorkflowEngine {
   }
 
   /**
-   * Execute a workflow phase
+   * Group phases into execution layers based on input/output dependencies.
+   * Phases whose inputs are all satisfied by earlier layers run in the same layer.
+   */
+  private computeExecutionLayers(phases: WorkflowPhase[]): WorkflowPhase[][] {
+    const layers: WorkflowPhase[][] = [];
+    const satisfied = new Set<string>(['task', 'topic']); // initial inputs always available
+    const placed = new Set<string>();
+
+    let remaining = [...phases];
+    while (remaining.length > 0) {
+      const layer: WorkflowPhase[] = [];
+      const nextRemaining: WorkflowPhase[] = [];
+
+      for (const phase of remaining) {
+        const inputsSatisfied = phase.inputs.every(
+          input => satisfied.has(input) || placed.has(phase.id)
+        );
+        if (inputsSatisfied) {
+          layer.push(phase);
+        } else {
+          nextRemaining.push(phase);
+        }
+      }
+
+      // If no phase could be placed, force the first remaining to break deadlocks
+      if (layer.length === 0 && nextRemaining.length > 0) {
+        layer.push(nextRemaining.shift()!);
+      }
+
+      for (const phase of layer) {
+        placed.add(phase.id);
+        for (const output of phase.outputs) {
+          satisfied.add(output);
+        }
+      }
+
+      layers.push(layer);
+      remaining = nextRemaining;
+    }
+    return layers;
+  }
+
+  /**
+   * Execute multiple phases in parallel with concurrency limit
+   */
+  private async executeParallel(
+    phases: WorkflowPhase[],
+    session: UnifiedSession,
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs,
+    maxConcurrency: number
+  ): Promise<PhaseResult[]> {
+    const results: PhaseResult[] = [];
+    for (let i = 0; i < phases.length; i += maxConcurrency) {
+      const batch = phases.slice(i, i + maxConcurrency);
+      const batchResults = await Promise.all(
+        batch.map(phase => this.executePhase(phase, session, context, phaseOutputs))
+      );
+      results.push(...batchResults);
+    }
+    return results;
+  }
+
+  /**
+   * Result from a single phase execution, including the content produced.
+   */
+  private static readonly EMPTY_RESULT: PhaseResult = { success: true, tasks: [] };
+
+  /**
+   * Execute a workflow phase, injecting accumulated outputs from prior phases.
    */
   private async executePhase(
     phase: WorkflowPhase,
     session: UnifiedSession,
-    context: WorkflowContext
-  ): Promise<{ success: boolean; tasks: TaskRecord[]; error?: string }> {
-    const tasks: TaskRecord[] = [];
-
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs = {}
+  ): Promise<PhaseResult> {
     try {
       switch (phase.type) {
         case 'planning':
-          return this.executePlanningPhase(phase, session, context);
+          return this.executePlanningPhase(phase, session, context, phaseOutputs);
 
         case 'execution':
-          return this.executeExecutionPhase(phase, session, context);
+          return this.executeExecutionPhase(phase, session, context, phaseOutputs);
 
         case 'delegation':
-          return this.executeDelegationPhase(phase, session, context);
+          return this.executeDelegationPhase(phase, session, context, phaseOutputs);
 
         case 'review':
-          return this.executeReviewPhase(phase, session, context);
+          return this.executeReviewPhase(phase, session, context, phaseOutputs);
 
         default:
-          return { success: true, tasks };
+          return WorkflowEngine.EMPTY_RESULT;
       }
     } catch (error) {
       return {
@@ -263,8 +378,9 @@ export class WorkflowEngine {
   private async executePlanningPhase(
     phase: WorkflowPhase,
     session: UnifiedSession,
-    context: WorkflowContext
-  ): Promise<{ success: boolean; tasks: TaskRecord[]; error?: string }> {
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs = {}
+  ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
     const adapter = this.adapters.get(phase.assignedAI || 'claude');
 
@@ -283,7 +399,7 @@ export class WorkflowEngine {
 
     try {
       const result = await adapter.execute({
-        prompt: this.buildPlanningPrompt(context),
+        prompt: this.buildPlanningPrompt(context, phaseOutputs, phase),
         workingDir: context.projectRoot,
         sandbox: 'read-only',
         sessionId: session.aiSessions[adapter.name as keyof typeof session.aiSessions],
@@ -322,7 +438,7 @@ export class WorkflowEngine {
       };
     }
 
-    return { success: true, tasks };
+    return { success: true, tasks, content: taskRecord.result };
   }
 
   /**
@@ -332,8 +448,9 @@ export class WorkflowEngine {
   private async executeDelegationPhase(
     phase: WorkflowPhase,
     session: UnifiedSession,
-    context: WorkflowContext
-  ): Promise<{ success: boolean; tasks: TaskRecord[]; error?: string }> {
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs = {}
+  ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
     const assignedAI = phase.assignedAI || 'codex';
     const adapter = this.adapters.get(assignedAI);
@@ -357,7 +474,7 @@ export class WorkflowEngine {
 
       // Phase 2-3: Execute with external AI (read-only sandbox)
       const result = await adapter.execute({
-        prompt: this.buildDelegationPrompt(context, phase),
+        prompt: this.buildDelegationPrompt(context, phase, phaseOutputs),
         workingDir: context.projectRoot,
         sandbox: 'read-only', // External AI has no write access (skills pattern)
         sessionId: session.aiSessions[assignedAI as keyof typeof session.aiSessions],
@@ -391,7 +508,7 @@ export class WorkflowEngine {
       };
     }
 
-    return { success: true, tasks };
+    return { success: true, tasks, content: taskRecord.result };
   }
 
   /**
@@ -400,10 +517,11 @@ export class WorkflowEngine {
   private async executeExecutionPhase(
     phase: WorkflowPhase,
     session: UnifiedSession,
-    context: WorkflowContext
-  ): Promise<{ success: boolean; tasks: TaskRecord[]; error?: string }> {
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs = {}
+  ): Promise<PhaseResult> {
     // Similar to delegation but with potential write access
-    return this.executeDelegationPhase(phase, session, context);
+    return this.executeDelegationPhase(phase, session, context, phaseOutputs);
   }
 
   /**
@@ -412,8 +530,9 @@ export class WorkflowEngine {
   private async executeReviewPhase(
     phase: WorkflowPhase,
     session: UnifiedSession,
-    context: WorkflowContext
-  ): Promise<{ success: boolean; tasks: TaskRecord[]; error?: string }> {
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs = {}
+  ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
     const adapter = this.adapters.get(phase.assignedAI || 'claude');
 
@@ -432,7 +551,7 @@ export class WorkflowEngine {
 
     try {
       const result = await adapter.execute({
-        prompt: this.buildReviewPrompt(context, session),
+        prompt: this.buildReviewPrompt(context, session, phaseOutputs),
         workingDir: context.projectRoot,
         sandbox: 'read-only',
       });
@@ -443,19 +562,39 @@ export class WorkflowEngine {
       taskRecord.status = 'failed';
     }
 
-    return { success: true, tasks };
+    return { success: true, tasks, content: taskRecord.result };
+  }
+
+  /**
+   * Build context section from accumulated phase outputs
+   */
+  private buildPhaseContext(phaseOutputs: PhaseOutputs, inputs: string[]): string {
+    const sections: string[] = [];
+    for (const input of inputs) {
+      if (phaseOutputs[input]) {
+        sections.push(`--- ${input} ---\n${phaseOutputs[input]}`);
+      }
+    }
+    if (sections.length === 0) return '';
+    return `\nPREVIOUS PHASE OUTPUTS:\n${sections.join('\n\n')}`;
   }
 
   /**
    * Build planning prompt
    */
-  private buildPlanningPrompt(context: WorkflowContext): string {
+  private buildPlanningPrompt(
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs = {},
+    phase?: WorkflowPhase
+  ): string {
+    const priorContext = phase ? this.buildPhaseContext(phaseOutputs, phase.inputs) : '';
     return `
 PURPOSE: Generate a detailed implementation plan
 TASK: ${context.task}
 MODE: planning
 CONTEXT: Project root: ${context.projectRoot}
 ${context.relevantFiles ? `Relevant files: ${context.relevantFiles.join(', ')}` : ''}
+${priorContext}
 EXPECTED: JSON task definitions following IMPL-N.M format
 CONSTRAINTS: Maximum 10 tasks, clear dependencies
     `.trim();
@@ -466,14 +605,17 @@ CONSTRAINTS: Maximum 10 tasks, clear dependencies
    */
   private buildDelegationPrompt(
     context: WorkflowContext,
-    phase: WorkflowPhase
+    phase: WorkflowPhase,
+    phaseOutputs: PhaseOutputs = {}
   ): string {
     const config = phase.config || {};
+    const priorContext = this.buildPhaseContext(phaseOutputs, phase.inputs);
     return `
 ${config.prompt || context.task}
 
 Working directory: ${context.projectRoot}
 ${context.relevantFiles ? `Context files: ${context.relevantFiles.join(', ')}` : ''}
+${priorContext}
 
 Please provide your analysis and implementation as unified diff format where applicable.
     `.trim();
@@ -484,8 +626,13 @@ Please provide your analysis and implementation as unified diff format where app
    */
   private buildReviewPrompt(
     context: WorkflowContext,
-    session: UnifiedSession
+    session: UnifiedSession,
+    phaseOutputs: PhaseOutputs = {}
   ): string {
+    // Gather all available phase outputs for review context
+    const allOutputs = Object.entries(phaseOutputs)
+      .map(([key, value]) => `--- ${key} ---\n${value}`)
+      .join('\n\n');
     return `
 Review the implementation for: ${context.task}
 
@@ -495,7 +642,7 @@ Check for:
 - Performance issues
 - Test coverage
 
-Session history: ${session.sharedContext.taskHistory.length} tasks completed
+${allOutputs ? `IMPLEMENTATION OUTPUTS:\n${allOutputs}` : `Session history: ${session.sharedContext.taskHistory.length} tasks completed`}
     `.trim();
   }
 
