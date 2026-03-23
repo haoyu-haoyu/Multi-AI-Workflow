@@ -5,7 +5,43 @@
  * Provides unified interface for Claude, Codex, Gemini, and LiteLLM.
  */
 
+import { existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { homedir } from 'os';
+
 export type SandboxLevel = 'read-only' | 'workspace-write' | 'danger-full-access';
+
+/**
+ * Resolve a bridge script path by checking multiple locations in order:
+ * 1. Relative to the MAW package installation (works after npm install -g)
+ * 2. ~/.maw/skills/<skill>/scripts/ (works after maw skill install)
+ * 3. Relative to process.cwd() (works during development)
+ */
+function resolveBridgePath(bridgeName: string): string {
+  const scriptFile = `${bridgeName}_bridge.py`;
+  const skillDir = bridgeName === 'codex'
+    ? 'collaborating-with-codex'
+    : 'collaborating-with-gemini';
+
+  const candidates = [
+    // 1. Relative to this package (npm global install)
+    join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'bridges', 'src', 'maw_bridges', scriptFile),
+    // 2. User skill directory
+    join(homedir(), '.maw', 'skills', skillDir, 'scripts', scriptFile),
+    // 3. Current working directory (development)
+    join(process.cwd(), 'bridges', 'src', 'maw_bridges', scriptFile),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  // Fallback to cwd-relative (original behavior)
+  return candidates[2];
+}
 
 export interface AIExecutionOptions {
   /** Task prompt/instruction */
@@ -328,16 +364,9 @@ export class CodexAdapter extends BaseAIAdapter {
 
   private async callBridge(options: AIExecutionOptions): Promise<BridgeResult> {
     const { spawn } = await import('child_process');
-    const { join } = await import('path');
 
     return new Promise((resolve, reject) => {
-      const bridgeScript = join(
-        process.cwd(),
-        'bridges',
-        'src',
-        'maw_bridges',
-        'codex_bridge.py'
-      );
+      const bridgeScript = resolveBridgePath('codex');
 
       const args = [
         bridgeScript,
@@ -493,16 +522,9 @@ export class GeminiAdapter extends BaseAIAdapter {
 
   private async callBridge(options: AIExecutionOptions): Promise<BridgeResult> {
     const { spawn } = await import('child_process');
-    const { join } = await import('path');
 
     return new Promise((resolve, reject) => {
-      const bridgeScript = join(
-        process.cwd(),
-        'bridges',
-        'src',
-        'maw_bridges',
-        'gemini_bridge.py'
-      );
+      const bridgeScript = resolveBridgePath('gemini');
 
       const args = [
         bridgeScript,
