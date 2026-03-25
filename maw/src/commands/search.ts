@@ -37,7 +37,7 @@ async function runCodexLens(
     const proc = spawn('codex-lens', args, {
       cwd,
       env: { ...process.env },
-      shell: true,
+      shell: false,
     });
 
     let stdout = '';

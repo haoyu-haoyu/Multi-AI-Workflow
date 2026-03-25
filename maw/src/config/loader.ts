@@ -102,7 +102,7 @@ export function loadConfig(projectRoot: string = process.cwd()): MAWConfig {
   let config: Record<string, unknown> = {};
 
   // Load user-level configs (lowest priority)
-  for (const relativePath of USER_CONFIG_PATHS.reverse()) {
+  for (const relativePath of [...USER_CONFIG_PATHS].reverse()) {
     const configPath = relativePath.replace('~', process.env.HOME || '');
     if (existsSync(configPath)) {
       try {
@@ -115,7 +115,7 @@ export function loadConfig(projectRoot: string = process.cwd()): MAWConfig {
   }
 
   // Load project-level configs (higher priority)
-  for (const relativePath of CONFIG_SEARCH_ORDER.reverse()) {
+  for (const relativePath of [...CONFIG_SEARCH_ORDER].reverse()) {
     const configPath = join(projectRoot, relativePath);
     if (existsSync(configPath)) {
       try {
