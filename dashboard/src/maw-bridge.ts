@@ -4,7 +4,8 @@
  * Reads session data from MAW's file-based storage and syncs with Dashboard SQLite.
  */
 
-import { existsSync, readFileSync, readdirSync, watchFile, unwatchFile } from 'fs';
+import { existsSync, readFileSync, readdirSync, watchFile, unwatchFile, unlinkSync, watch } from 'fs';
+import type { FSWatcher } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
@@ -380,8 +381,10 @@ export class MAWBridge {
   /**
    * Start watching for file changes
    */
+  private eventWatcher: FSWatcher | null = null;
+
   private startWatching(): void {
-    // Watch all session paths
+    // Watch all session paths (legacy full-sync fallback)
     for (const sessionsPath of this.sessionPaths) {
       if (existsSync(sessionsPath)) {
         watchFile(sessionsPath, { interval: 2000 }, () => {
@@ -391,6 +394,92 @@ export class MAWBridge {
         this.watchers.set(sessionsPath, sessionsPath as any);
         console.log(`[MAW Bridge] Watching: ${sessionsPath}`);
       }
+    }
+
+    // Watch events directory for incremental updates from CLI
+    this.startEventWatcher();
+  }
+
+  /**
+   * Watch ~/.maw/events/ for incremental session events from the CLI.
+   * Each event is a JSON file written by SessionManager.emitEvent().
+   */
+  private startEventWatcher(): void {
+    const eventsDir = join(homedir(), '.maw', 'events');
+    if (!existsSync(eventsDir)) return;
+
+    try {
+      this.eventWatcher = watch(eventsDir, (eventType, filename) => {
+        if (!filename?.endsWith('.json') || eventType !== 'rename') return;
+        const eventPath = join(eventsDir, filename);
+        if (!existsSync(eventPath)) return;
+
+        try {
+          const event = JSON.parse(readFileSync(eventPath, 'utf-8'));
+          this.processEvent(event);
+          // Remove processed event file to avoid reprocessing
+          try { unlinkSync(eventPath); } catch { /* ignore cleanup errors */ }
+        } catch {
+          // Ignore malformed event files
+        }
+      });
+      console.log(`[MAW Bridge] Watching events: ${eventsDir}`);
+    } catch (err) {
+      console.warn('[MAW Bridge] Could not watch events directory:', err);
+    }
+  }
+
+  /**
+   * Process a single session event from the CLI and sync to SQLite.
+   */
+  private processEvent(event: { type: string; sessionId: string; data: Record<string, unknown> }): void {
+    try {
+      switch (event.type) {
+        case 'session.created': {
+          const existing = this.storage.getSession(event.sessionId);
+          if (!existing) {
+            this.storage.createSession({
+              id: event.sessionId,
+              name: (event.data.name as string) || 'CLI Session',
+              status: (event.data.status as 'active') || 'active',
+              workflowLevel: (event.data.workflowLevel as string) || 'plan',
+            });
+          }
+          console.log(`[MAW Bridge] Event: session created ${event.sessionId}`);
+          break;
+        }
+        case 'session.updated':
+        case 'session.completed': {
+          this.storage.updateSession(event.sessionId, {
+            status: (event.data.status as 'active' | 'completed' | 'paused') || 'active',
+          });
+          console.log(`[MAW Bridge] Event: session ${event.type} ${event.sessionId}`);
+          break;
+        }
+        case 'task.added': {
+          const taskId = (event.data.taskId as string) || event.sessionId;
+          this.storage.createWorkflowRun({
+            id: taskId,
+            sessionId: event.sessionId,
+            level: '',
+            task: (event.data.description as string) || '',
+            status: (event.data.status as 'pending' | 'running' | 'completed' | 'failed') || 'pending',
+          });
+          console.log(`[MAW Bridge] Event: task added to ${event.sessionId}`);
+          break;
+        }
+        case 'ai.linked': {
+          this.storage.updateSession(event.sessionId, {
+            metadata: {
+              aiSessions: { [(event.data.aiType as string)]: event.data.externalSessionId },
+            },
+          });
+          console.log(`[MAW Bridge] Event: AI linked to ${event.sessionId}`);
+          break;
+        }
+      }
+    } catch (err) {
+      console.warn(`[MAW Bridge] Failed to process event ${event.type}:`, err);
     }
   }
 
@@ -402,6 +491,10 @@ export class MAWBridge {
       unwatchFile(path);
     }
     this.watchers.clear();
+    if (this.eventWatcher) {
+      this.eventWatcher.close();
+      this.eventWatcher = null;
+    }
   }
 }
 

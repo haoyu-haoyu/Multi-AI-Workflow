@@ -14,6 +14,18 @@ export type SessionStatus = 'active' | 'paused' | 'completed' | 'archived';
 export type WorkflowLevel = 'lite' | 'lite-plan' | 'plan' | 'tdd-plan' | 'brainstorm' | 'delegate' | 'collaborate' | 'ralph';
 
 /**
+ * Event emitted by SessionManager for dashboard synchronization.
+ * Events are written as individual JSON files to ~/.maw/events/
+ * so the dashboard can incrementally sync without polling sessions.json.
+ */
+export interface SessionEvent {
+  type: 'session.created' | 'session.updated' | 'session.completed' | 'task.added' | 'ai.linked';
+  timestamp: string;
+  sessionId: string;
+  data: Record<string, unknown>;
+}
+
+/**
  * Unified session structure combining CCW and skills approaches
  */
 export interface UnifiedSession {
@@ -80,6 +92,7 @@ export class SessionManager {
   private sessions: Map<string, UnifiedSession> = new Map();
   private persistPath: string;
   private globalPersistPath: string;
+  private eventsDir: string;
   private workflowDir: string;
   private taskDir: string;
 
@@ -92,6 +105,7 @@ export class SessionManager {
   constructor(projectRoot: string = process.cwd()) {
     this.persistPath = join(projectRoot, '.maw', 'sessions.json');
     this.globalPersistPath = join(homedir(), '.maw', 'sessions.json');
+    this.eventsDir = join(homedir(), '.maw', 'events');
     this.workflowDir = join(projectRoot, '.workflow');
     this.taskDir = join(projectRoot, '.task');
 
@@ -107,6 +121,9 @@ export class SessionManager {
     const globalMawDir = join(this.globalPersistPath, '..');
     if (!existsSync(globalMawDir)) {
       mkdirSync(globalMawDir, { recursive: true });
+    }
+    if (!existsSync(this.eventsDir)) {
+      mkdirSync(this.eventsDir, { recursive: true });
     }
     if (!existsSync(this.workflowDir)) {
       mkdirSync(this.workflowDir, { recursive: true });
@@ -149,6 +166,26 @@ export class SessionManager {
   }
 
   /**
+   * Emit a session event for dashboard synchronization.
+   * Each event is written as an individual JSON file to ~/.maw/events/
+   * so the dashboard can process them incrementally.
+   */
+  private emitEvent(type: SessionEvent['type'], sessionId: string, data: Record<string, unknown> = {}): void {
+    try {
+      const event: SessionEvent = {
+        type,
+        timestamp: new Date().toISOString(),
+        sessionId,
+        data,
+      };
+      const filename = `${Date.now()}-${type.replace(/\./g, '-')}.json`;
+      this.atomicWriteFileSync(join(this.eventsDir, filename), JSON.stringify(event));
+    } catch {
+      // Event emission is best-effort — don't break the CLI if events dir is unavailable
+    }
+  }
+
+  /**
    * Create a new unified session
    */
   async createSession(options: SessionCreateOptions): Promise<UnifiedSession> {
@@ -186,6 +223,12 @@ export class SessionManager {
 
     this.sessions.set(mawSessionId, session);
     this.saveSessions();
+    this.emitEvent('session.created', mawSessionId, {
+      name: session.name,
+      status: session.metadata.status,
+      workflowLevel: session.workflowSession?.level,
+      projectRoot: session.sharedContext.projectRoot,
+    });
 
     return session;
   }
@@ -235,6 +278,10 @@ export class SessionManager {
     session.aiSessions[aiType] = externalSessionId;
     session.metadata.updatedAt = new Date();
     this.saveSessions();
+    this.emitEvent('ai.linked', session.mawSessionId, {
+      aiType,
+      externalSessionId,
+    });
   }
 
   /**
@@ -267,6 +314,12 @@ export class SessionManager {
     session.sharedContext.taskHistory.push(task);
     session.metadata.updatedAt = new Date();
     this.saveSessions();
+    this.emitEvent('task.added', session.mawSessionId, {
+      taskId: task.id,
+      description: task.description,
+      assignedAI: task.assignedAI,
+      status: task.status,
+    });
   }
 
   /**
@@ -278,6 +331,8 @@ export class SessionManager {
       session.metadata.status = status;
       session.metadata.updatedAt = new Date();
       this.saveSessions();
+      const eventType = status === 'completed' ? 'session.completed' as const : 'session.updated' as const;
+      this.emitEvent(eventType, sessionId, { status });
     }
   }
 
