@@ -743,6 +743,81 @@ ${allOutputs ? `IMPLEMENTATION OUTPUTS:\n${allOutputs}` : `Session history: ${se
   }
 
   /**
+   * TDD-Plan workflow: Test-Driven Development with AI
+   *
+   * RED:   Write failing tests first (Claude plans, Codex writes tests)
+   * GREEN: Implement minimum code to pass (Codex implements)
+   * REVIEW: Verify tests pass and code quality (Claude reviews)
+   */
+  static createTDDPlanWorkflow(task: string): WorkflowDefinition {
+    return {
+      name: 'tdd-plan',
+      level: 'plan',
+      description: 'Test-driven development: write tests first, then implement',
+      phases: [
+        {
+          id: 'plan-tests',
+          name: 'Plan Tests (RED)',
+          type: 'planning',
+          assignedAI: 'claude',
+          inputs: ['task'],
+          outputs: ['test-plan'],
+          config: {
+            prompt: `You are planning a TDD workflow. For the following task, design the test cases FIRST.
+Do NOT write implementation code. Only describe what tests should exist and what they should verify.
+
+Task: ${task}
+
+Output:
+1. List of test cases with descriptions
+2. Expected inputs and outputs for each test
+3. Edge cases to cover`,
+          },
+        },
+        {
+          id: 'write-tests',
+          name: 'Write Tests (RED)',
+          type: 'delegation',
+          assignedAI: 'codex',
+          inputs: ['test-plan'],
+          outputs: ['test-files'],
+          config: {
+            prompt: `Write the test files based on the test plan. The tests should FAIL initially because the implementation does not exist yet. This is the RED phase of TDD.
+
+Task: ${task}`,
+          },
+        },
+        {
+          id: 'implement',
+          name: 'Implement (GREEN)',
+          type: 'delegation',
+          assignedAI: 'codex',
+          inputs: ['test-files'],
+          outputs: ['implementation'],
+          config: {
+            prompt: `Write the MINIMUM implementation code to make the failing tests pass. This is the GREEN phase of TDD. Do not over-engineer — write just enough code to satisfy the tests.
+
+Task: ${task}`,
+          },
+        },
+        {
+          id: 'review',
+          name: 'Review & Refactor',
+          type: 'review',
+          assignedAI: 'claude',
+          inputs: ['test-files', 'implementation'],
+          outputs: ['review'],
+        },
+      ],
+      aiAssignment: {
+        planner: 'claude',
+        executors: ['codex'],
+        reviewers: ['claude'],
+      },
+    };
+  }
+
+  /**
    * Level 4: Brainstorm workflow
    */
   static createBrainstormWorkflow(

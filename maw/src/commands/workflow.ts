@@ -84,8 +84,7 @@ export async function executePlanWorkflow(
         workflow = WorkflowEngine.createLitePlanWorkflow(task);
         break;
       case 'tdd-plan':
-        workflow = WorkflowEngine.createPlanWorkflow(task);
-        workflow.name = 'tdd-plan';
+        workflow = WorkflowEngine.createTDDPlanWorkflow(task);
         break;
       default:
         workflow = WorkflowEngine.createPlanWorkflow(task);

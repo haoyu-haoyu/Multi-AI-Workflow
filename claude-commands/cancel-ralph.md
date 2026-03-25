@@ -1,15 +1,15 @@
-# 取消 Ralph Loop
+# Cancel Ralph Loop
 
-取消当前正在运行的 Ralph Loop。
+Cancel the currently running Ralph Loop.
 
-## 执行命令
+## Command
 
 ```bash
 node ~/.maw/maw/bin/maw.js cancel-ralph
 ```
 
-## 说明
+## Description
 
-此命令会向当前运行的 Ralph Loop 发送取消信号，循环会在当前迭代完成后停止。
+Sends a cancel signal to the running Ralph Loop. The loop will stop after the current iteration completes.
 
-如果没有正在运行的 Ralph Loop，会显示相应提示。
+If no Ralph Loop is currently running, a message will be displayed.
