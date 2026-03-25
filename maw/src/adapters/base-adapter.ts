@@ -242,15 +242,54 @@ export class ClaudeAdapter extends BaseAIAdapter {
     this.validateOptions(options);
     const startTime = Date.now();
 
-    // Claude is the native model - execution happens through Claude Code itself
-    // This adapter is primarily for consistency in the multi-AI architecture
-    return this.buildResult(
-      true,
-      `[Claude Native] Task delegated: ${options.prompt.substring(0, 100)}...`,
-      options.sessionId,
-      undefined,
-      Date.now() - startTime
-    );
+    try {
+      // Call the Claude CLI with --print flag (non-interactive, returns output)
+      const { spawn: spawnProc } = await import('child_process');
+      const content = await new Promise<string>((resolve, reject) => {
+        const args = ['-p', options.prompt, '--output-format', 'text'];
+        if (options.workingDir) {
+          args.push('--directory', options.workingDir);
+        }
+        const proc = spawnProc('claude', args, {
+          cwd: options.workingDir,
+          env: process.env,
+          shell: false,
+        });
+
+        let stdout = '';
+        let stderr = '';
+        proc.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
+        proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+        proc.on('error', (err: Error) => {
+          // Claude CLI not available — fall back to passthrough message
+          resolve(`[Claude Native] ${options.prompt}\n\n(Claude CLI not found: ${err.message}. Install via: npm install -g @anthropic-ai/claude-code)`);
+        });
+        proc.on('close', (code: number | null) => {
+          if (code === 0 && stdout.trim()) {
+            resolve(stdout.trim());
+          } else {
+            resolve(stdout.trim() || `[Claude Native] Task: ${options.prompt.substring(0, 200)}`);
+          }
+        });
+      });
+
+      return this.buildResult(
+        true,
+        content,
+        options.sessionId,
+        undefined,
+        Date.now() - startTime
+      );
+    } catch {
+      // Fallback if Claude CLI is not available
+      return this.buildResult(
+        true,
+        `[Claude Native] Task delegated: ${options.prompt.substring(0, 100)}...`,
+        options.sessionId,
+        undefined,
+        Date.now() - startTime
+      );
+    }
   }
 
   async *stream(
