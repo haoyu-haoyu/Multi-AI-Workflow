@@ -90,6 +90,12 @@ export async function delegateToAI(
     // Get appropriate adapter
     let adapter;
     switch (ai.toLowerCase()) {
+      case 'claude':
+        adapter = new ClaudeAdapter({
+          name: 'claude',
+          enabled: true,
+        });
+        break;
       case 'codex':
         adapter = new CodexAdapter({
           name: 'codex',
@@ -106,7 +112,7 @@ export async function delegateToAI(
         break;
       default:
         spinner.fail(chalk.red(`Unknown AI: ${ai}`));
-        console.log(chalk.dim('Available: codex, gemini'));
+        console.log(chalk.dim('Available: claude, codex, gemini'));
         return;
     }
 
@@ -354,17 +360,29 @@ export async function semanticRoute(
 
   // Execute with selected AI
   if (selectedAI === 'claude') {
-    // Use Claude directly (native integration)
+    // Use Claude CLI for real execution
     const spinner = ora('Claude is processing...').start();
     try {
-      // For Claude, we execute internally
-      spinner.succeed(chalk.green('Task routed to Claude (native)'));
-      console.log(chalk.dim('\nNote: Claude processes this task natively within Claude Code.'));
-      console.log(chalk.dim('The task has been logged for Claude to handle in the current session.'));
-      console.log(chalk.cyan('\n--- Task ---'));
-      console.log(task);
+      const config = loadConfig();
+      const adapter = new ClaudeAdapter({
+        name: 'claude',
+        enabled: true,
+      });
+      const result = await adapter.execute({
+        prompt: task,
+        workingDir: options.cd,
+        sandbox: 'read-only',
+      });
+      if (result.success) {
+        spinner.succeed(chalk.green('Claude completed'));
+        console.log(chalk.cyan('\n--- Response ---'));
+        console.log(result.content);
+      } else {
+        spinner.fail(chalk.red('Claude failed'));
+        console.error(result.error || 'Unknown error');
+      }
     } catch (error) {
-      spinner.fail(chalk.red('Claude routing failed'));
+      spinner.fail(chalk.red('Claude execution failed'));
       console.error(error instanceof Error ? error.message : 'Unknown error');
     }
   } else {
