@@ -7,6 +7,6 @@
  * It loads the CLI module and executes with the provided arguments.
  */
 
-import { run } from '../dist/cli.js';
+import { run } from '../dist/src/cli.js';
 
 run(process.argv);
