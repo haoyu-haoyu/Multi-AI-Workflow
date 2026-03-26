@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from '../core/session-manager.js';
 import { loadConfig } from '../config/loader.js';
+import { analyzeTaskForRouting } from '../core/semantic-router.js';
 
 interface RalphLoopOptions {
   maxIterations: number;
@@ -202,7 +203,7 @@ async function executeAI(
 
     case 'auto':
       // Auto-select based on task content (semantic routing)
-      const selectedAI = selectBestAI(prompt);
+      const selectedAI = analyzeTaskForRouting(prompt).ai;
       return await executeAI(selectedAI, prompt, options, sessionId);
 
     default:
@@ -324,29 +325,6 @@ async function executePythonBridge(
       reject(err);
     });
   });
-}
-
-/**
- * Simple semantic routing for auto AI selection
- */
-function selectBestAI(prompt: string): string {
-  const lowerPrompt = prompt.toLowerCase();
-
-  // Code-heavy tasks → Codex
-  if (
-    /\b(implement|code|function|class|test|debug|fix bug|refactor)\b/i.test(prompt) &&
-    /\b(python|javascript|typescript|java|go|rust)\b/i.test(prompt)
-  ) {
-    return 'codex';
-  }
-
-  // Visual/multimodal tasks → Gemini
-  if (/\b(image|visual|diagram|analyze|multimodal|ui|design)\b/i.test(prompt)) {
-    return 'gemini';
-  }
-
-  // Default to Claude for planning/reasoning
-  return 'claude';
 }
 
 /**

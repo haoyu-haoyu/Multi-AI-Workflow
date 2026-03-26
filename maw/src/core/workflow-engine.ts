@@ -6,8 +6,9 @@
  */
 
 import { SessionManager, UnifiedSession, WorkflowLevel, TaskRecord } from './session-manager.js';
-import { BaseAIAdapter, AIExecutionResult, SandboxLevel } from '../adapters/base-adapter.js';
+import { BaseAIAdapter, AIExecutionResult, SandboxLevel, ClaudeAdapter, CodexAdapter, GeminiAdapter } from '../adapters/base-adapter.js';
 import { SkillRegistry } from './skill-registry.js';
+import type { MAWConfig } from '../config/loader.js';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join, resolve, relative } from 'path';
@@ -182,6 +183,21 @@ export class WorkflowEngine {
    */
   registerAdapter(adapter: BaseAIAdapter): void {
     this.adapters.set(adapter.name, adapter);
+  }
+
+  /**
+   * Create an engine pre-configured with adapters from the MAW config
+   */
+  static createConfiguredEngine(config: MAWConfig, projectRoot: string = process.cwd()): WorkflowEngine {
+    const engine = new WorkflowEngine(projectRoot);
+    engine.registerAdapter(new ClaudeAdapter({ name: 'claude', enabled: true }));
+    if (config.ai.codex.enabled) {
+      engine.registerAdapter(new CodexAdapter({ name: 'codex', enabled: true, cliPath: config.ai.codex.cliPath }));
+    }
+    if (config.ai.gemini.enabled) {
+      engine.registerAdapter(new GeminiAdapter({ name: 'gemini', enabled: true, cliPath: config.ai.gemini.cliPath }));
+    }
+    return engine;
   }
 
   /**
@@ -476,7 +492,7 @@ export class WorkflowEngine {
       const result = await adapter.execute({
         prompt: this.buildDelegationPrompt(context, phase, phaseOutputs),
         workingDir: context.projectRoot,
-        sandbox: 'read-only', // External AI has no write access (skills pattern)
+        sandbox: (phase.config?.sandbox as SandboxLevel) || 'read-only',
         sessionId: session.aiSessions[assignedAI as keyof typeof session.aiSessions],
         context: { relevantFiles: relevantCode },
       });
@@ -653,7 +669,7 @@ ${allOutputs ? `IMPLEMENTATION OUTPUTS:\n${allOutputs}` : `Session history: ${se
   /**
    * Level 1: Lite workflow - instant execution
    */
-  static createLiteWorkflow(task: string): WorkflowDefinition {
+  static createLiteWorkflow(): WorkflowDefinition {
     return {
       name: 'lite',
       level: 'lite',
@@ -674,7 +690,7 @@ ${allOutputs ? `IMPLEMENTATION OUTPUTS:\n${allOutputs}` : `Session history: ${se
   /**
    * Level 2: Lite-plan workflow
    */
-  static createLitePlanWorkflow(task: string): WorkflowDefinition {
+  static createLitePlanWorkflow(): WorkflowDefinition {
     return {
       name: 'lite-plan',
       level: 'lite-plan',
@@ -703,7 +719,7 @@ ${allOutputs ? `IMPLEMENTATION OUTPUTS:\n${allOutputs}` : `Session history: ${se
   /**
    * Level 3: Standard plan workflow
    */
-  static createPlanWorkflow(task: string): WorkflowDefinition {
+  static createPlanWorkflow(): WorkflowDefinition {
     return {
       name: 'plan',
       level: 'plan',
@@ -821,7 +837,6 @@ Task: ${task}`,
    * Level 4: Brainstorm workflow
    */
   static createBrainstormWorkflow(
-    topic: string,
     parallel: boolean = true
   ): WorkflowDefinition {
     return {
@@ -868,7 +883,7 @@ Task: ${task}`,
   /**
    * New: Collaborate workflow (Claude + Codex + Gemini)
    */
-  static createCollaborateWorkflow(task: string): WorkflowDefinition {
+  static createCollaborateWorkflow(): WorkflowDefinition {
     return {
       name: 'collaborate',
       level: 'collaborate',

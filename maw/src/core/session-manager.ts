@@ -95,11 +95,19 @@ export class SessionManager {
   private eventsDir: string;
   private workflowDir: string;
   private taskDir: string;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly SAVE_DEBOUNCE_MS = 500;
+  private static readonly MAX_LOADED_SESSIONS = 100;
+  private static readonly MAX_SESSION_AGE_DAYS = 30;
 
   private atomicWriteFileSync(filePath: string, data: string): void {
     const tmpPath = filePath + '.tmp';
     writeFileSync(tmpPath, data);
     renameSync(tmpPath, filePath);
+  }
+
+  static async create(projectRoot: string = process.cwd()): Promise<SessionManager> {
+    return new SessionManager(projectRoot);
   }
 
   constructor(projectRoot: string = process.cwd()) {
@@ -111,6 +119,7 @@ export class SessionManager {
 
     this.ensureDirectories();
     this.loadSessions();
+    process.on('exit', () => this.flushSessions());
   }
 
   private ensureDirectories(): void {
@@ -134,34 +143,52 @@ export class SessionManager {
   }
 
   private loadSessions(): void {
-    // Try to load from project-specific path first, then global
     const pathsToTry = [this.persistPath, this.globalPersistPath];
+    const cutoff = Date.now() - SessionManager.MAX_SESSION_AGE_DAYS * 24 * 60 * 60 * 1000;
 
     for (const path of pathsToTry) {
       if (existsSync(path)) {
         try {
           const data = JSON.parse(readFileSync(path, 'utf-8'));
           for (const [id, session] of Object.entries(data)) {
-            this.sessions.set(id, session as UnifiedSession);
+            const s = session as UnifiedSession;
+            const updatedAt = new Date(s.metadata.updatedAt).getTime();
+            if (updatedAt >= cutoff) {
+              this.sessions.set(id, s);
+            }
           }
         } catch {
           console.warn('[SessionManager] Warning: Failed to parse sessions from ' + path + '. Starting fresh.');
         }
       }
     }
+
+    if (this.sessions.size > SessionManager.MAX_LOADED_SESSIONS) {
+      const sorted = [...this.sessions.entries()]
+        .sort((a, b) => new Date(b[1].metadata.updatedAt).getTime() - new Date(a[1].metadata.updatedAt).getTime());
+      this.sessions = new Map(sorted.slice(0, SessionManager.MAX_LOADED_SESSIONS));
+    }
   }
 
   private saveSessions(): void {
+    if (this.saveTimer !== null) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.flushSessions();
+    }, SessionManager.SAVE_DEBOUNCE_MS);
+  }
+
+  flushSessions(): void {
+    if (this.saveTimer !== null) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
     const data: Record<string, UnifiedSession> = {};
     for (const [id, session] of this.sessions) {
       data[id] = session;
     }
     const jsonData = JSON.stringify(data, null, 2);
-
-    // Save to project-specific location
     this.atomicWriteFileSync(this.persistPath, jsonData);
-
-    // Also save to global location for dashboard access
     this.atomicWriteFileSync(this.globalPersistPath, jsonData);
   }
 

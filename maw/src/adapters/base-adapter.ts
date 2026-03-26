@@ -9,6 +9,7 @@ import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
+import type { ChildProcess } from 'child_process';
 
 export type SandboxLevel = 'read-only' | 'workspace-write' | 'danger-full-access';
 
@@ -41,6 +42,14 @@ function resolveBridgePath(bridgeName: string): string {
 
   // Fallback to cwd-relative (original behavior)
   return candidates[2];
+}
+
+function enforceTimeout(proc: ChildProcess, timeoutMs: number): () => void {
+  const timer = setTimeout(() => {
+    proc.kill('SIGTERM');
+    setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 5000);
+  }, timeoutMs);
+  return () => clearTimeout(timer);
 }
 
 export interface AIExecutionOptions {
@@ -255,16 +264,19 @@ export class ClaudeAdapter extends BaseAIAdapter {
           env: process.env,
           shell: false,
         });
+        const clearTimer = enforceTimeout(proc, options.timeout || 120_000);
 
         let stdout = '';
         let stderr = '';
         proc.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
         proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
         proc.on('error', (err: Error) => {
+          clearTimer();
           // Claude CLI not available — fall back to passthrough message
           resolve(`[Claude Native] ${options.prompt}\n\n(Claude CLI not found: ${err.message}. Install via: npm install -g @anthropic-ai/claude-code)`);
         });
         proc.on('close', (code: number | null) => {
+          clearTimer();
           if (code === 0 && stdout.trim()) {
             resolve(stdout.trim());
           } else {
@@ -426,6 +438,7 @@ export class CodexAdapter extends BaseAIAdapter {
         cwd: options.workingDir,
         env: process.env,
       });
+      const clearTimer = enforceTimeout(proc, options.timeout || 120_000);
 
       let stdout = '';
       let stderr = '';
@@ -439,6 +452,7 @@ export class CodexAdapter extends BaseAIAdapter {
       });
 
       proc.on('close', (code) => {
+        clearTimer();
         if (code === 0) {
           try {
             const result = JSON.parse(stdout);
@@ -459,6 +473,7 @@ export class CodexAdapter extends BaseAIAdapter {
       });
 
       proc.on('error', (err) => {
+        clearTimer();
         reject(err);
       });
     });
@@ -579,6 +594,7 @@ export class GeminiAdapter extends BaseAIAdapter {
         cwd: options.workingDir,
         env: process.env,
       });
+      const clearTimer = enforceTimeout(proc, options.timeout || 120_000);
 
       let stdout = '';
       let stderr = '';
@@ -592,6 +608,7 @@ export class GeminiAdapter extends BaseAIAdapter {
       });
 
       proc.on('close', (code) => {
+        clearTimer();
         if (code === 0) {
           try {
             const result = JSON.parse(stdout);
@@ -612,6 +629,7 @@ export class GeminiAdapter extends BaseAIAdapter {
       });
 
       proc.on('error', (err) => {
+        clearTimer();
         reject(err);
       });
     });

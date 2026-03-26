@@ -82,6 +82,10 @@ const MAWConfigSchema = z.object({
 export type MAWConfig = z.infer<typeof MAWConfigSchema>;
 export type AIConfig = z.infer<typeof AIConfigSchema>;
 
+interface ConfigCacheEntry { config: MAWConfig; timestamp: number; }
+const configCache = new Map<string, ConfigCacheEntry>();
+const CONFIG_CACHE_TTL_MS = 5_000;
+
 /**
  * Configuration search order (priority: high to low)
  */
@@ -99,6 +103,12 @@ const USER_CONFIG_PATHS = [
  * Load configuration from all sources
  */
 export function loadConfig(projectRoot: string = process.cwd()): MAWConfig {
+  const cacheKey = projectRoot;
+  const cached = configCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CONFIG_CACHE_TTL_MS) {
+    return cached.config;
+  }
+
   let config: Record<string, unknown> = {};
 
   // Load user-level configs (lowest priority)
@@ -131,7 +141,9 @@ export function loadConfig(projectRoot: string = process.cwd()): MAWConfig {
   config = applyEnvOverrides(config as Partial<MAWConfig>) as Record<string, unknown>;
 
   // Validate and apply defaults
-  return MAWConfigSchema.parse(config);
+  const result = MAWConfigSchema.parse(config);
+  configCache.set(cacheKey, { config: result, timestamp: Date.now() });
+  return result;
 }
 
 /**
@@ -292,4 +304,6 @@ export function createDefaultConfig(projectRoot: string = process.cwd()): MAWCon
   return MAWConfigSchema.parse(defaultConfig);
 }
 
-export default { loadConfig, saveConfig, getConfigValue, setConfigValue, createDefaultConfig };
+export function resetConfigCache(): void { configCache.clear(); }
+
+export default { loadConfig, saveConfig, getConfigValue, setConfigValue, createDefaultConfig, resetConfigCache };

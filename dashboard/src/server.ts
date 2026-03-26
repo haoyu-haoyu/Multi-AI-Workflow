@@ -44,7 +44,31 @@ export class DashboardServer {
   }
 
   private setupMiddleware(): void {
-    this.app.use(cors());
+    const allowedOrigins = (process.env.MAW_CORS_ORIGINS || 'http://localhost:3000').split(',');
+    this.app.use(cors({
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+      credentials: true,
+    }));
+
+    // Optional token auth middleware
+    const authToken = process.env.MAW_DASHBOARD_TOKEN;
+    if (authToken) {
+      this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+        const provided = req.headers.authorization?.replace('Bearer ', '');
+        if (provided !== authToken) {
+          res.status(401).json({ error: 'Unauthorized' });
+          return;
+        }
+        next();
+      });
+    }
+
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));
 

@@ -96,13 +96,13 @@ describe('buildPhaseContext', () => {
 
 describe('Workflow definitions', () => {
   it('lite workflow has single execution phase', () => {
-    const wf = WorkflowEngine.createLiteWorkflow('test task');
+    const wf = WorkflowEngine.createLiteWorkflow();
     assert.strictEqual(wf.phases.length, 1);
     assert.strictEqual(wf.phases[0].type, 'execution');
   });
 
   it('brainstorm workflow has parallel config', () => {
-    const wf = WorkflowEngine.createBrainstormWorkflow('test topic', true);
+    const wf = WorkflowEngine.createBrainstormWorkflow(true);
     assert.ok(wf.parallelConfig);
     assert.strictEqual(wf.parallelConfig!.maxConcurrency, 2);
     assert.strictEqual(wf.parallelConfig!.dependencyAware, true);
@@ -121,7 +121,7 @@ describe('Workflow definitions', () => {
   });
 
   it('collaborate workflow assigns different AIs', () => {
-    const wf = WorkflowEngine.createCollaborateWorkflow('test');
+    const wf = WorkflowEngine.createCollaborateWorkflow();
     const ais = wf.phases.map(p => p.assignedAI);
     assert.ok(ais.includes('claude'));
     assert.ok(ais.includes('codex'));

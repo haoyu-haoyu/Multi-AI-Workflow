@@ -10,6 +10,7 @@ import { WorkflowEngine, WorkflowContext } from '../core/workflow-engine.js';
 import { SessionManager } from '../core/session-manager.js';
 import { ClaudeAdapter, CodexAdapter, GeminiAdapter, SandboxLevel } from '../adapters/base-adapter.js';
 import { loadConfig } from '../config/loader.js';
+import { analyzeTaskForRouting, AI_ROUTING_PATTERNS } from '../core/semantic-router.js';
 
 interface DelegateOptions {
   sandbox: string;
@@ -23,36 +24,6 @@ interface SemanticRouteOptions {
   sandbox: string;
   prefer?: string;
 }
-
-// Keyword patterns for semantic routing (CCW's semantic CLI invocation)
-const AI_ROUTING_PATTERNS: Record<string, { keywords: RegExp[]; strength: string[] }> = {
-  codex: {
-    keywords: [
-      /\b(algorithm|backend|api|server|database|logic|optimize|performance|debug|test)\b/i,
-      /\b(python|node|javascript|typescript|go|rust|java)\b/i,
-      /\b(implement|refactor|fix|analyze|review)\b/i,
-      /\bcli\b/i,
-    ],
-    strength: ['algorithm', 'backend', 'performance', 'debugging', 'code review'],
-  },
-  gemini: {
-    keywords: [
-      /\b(frontend|ui|ux|design|style|css|html|react|vue|angular)\b/i,
-      /\b(visual|multimodal|image|diagram|sketch|prototype)\b/i,
-      /\b(explain|summarize|document|translate)\b/i,
-      /\bresearch\b/i,
-    ],
-    strength: ['frontend', 'UI/UX', 'visual analysis', 'documentation', 'research'],
-  },
-  claude: {
-    keywords: [
-      /\b(plan|architect|design|strategy|complex|multi-step)\b/i,
-      /\b(security|audit|compliance)\b/i,
-      /\b(integrate|coordinate|orchestrate)\b/i,
-    ],
-    strength: ['planning', 'architecture', 'security', 'integration'],
-  },
-};
 
 interface CollaborateOptions {
   planner: string;
@@ -191,37 +162,10 @@ export async function executeCollaboration(
 
   try {
     const config = loadConfig();
-    const engine = new WorkflowEngine();
-
-    // Register Claude as planner
-    engine.registerAdapter(new ClaudeAdapter({ name: 'claude', enabled: true }));
-
-    // Register executor adapters
-    for (const executor of executors) {
-      switch (executor.toLowerCase()) {
-        case 'codex':
-          if (config.ai.codex.enabled) {
-            engine.registerAdapter(new CodexAdapter({
-              name: 'codex',
-              enabled: true,
-              cliPath: config.ai.codex.cliPath,
-            }));
-          }
-          break;
-        case 'gemini':
-          if (config.ai.gemini.enabled) {
-            engine.registerAdapter(new GeminiAdapter({
-              name: 'gemini',
-              enabled: true,
-              cliPath: config.ai.gemini.cliPath,
-            }));
-          }
-          break;
-      }
-    }
+    const engine = WorkflowEngine.createConfiguredEngine(config);
 
     // Create collaborate workflow
-    const workflow = WorkflowEngine.createCollaborateWorkflow(task);
+    const workflow = WorkflowEngine.createCollaborateWorkflow();
 
     // Adjust workflow based on options
     if (!options.parallel) {
@@ -271,50 +215,6 @@ export async function executeCollaboration(
     spinner.fail(chalk.red('Collaboration error'));
     console.error(error instanceof Error ? error.message : 'Unknown error');
   }
-}
-
-/**
- * Analyze task and determine best AI using semantic routing
- * Implements CCW's semantic CLI invocation pattern
- */
-function analyzeTaskForRouting(task: string): { ai: string; confidence: number; reasons: string[] } {
-  const scores: Record<string, { score: number; matches: string[] }> = {
-    codex: { score: 0, matches: [] },
-    gemini: { score: 0, matches: [] },
-    claude: { score: 0, matches: [] },
-  };
-
-  // Score each AI based on keyword matches
-  for (const [ai, patterns] of Object.entries(AI_ROUTING_PATTERNS)) {
-    for (const pattern of patterns.keywords) {
-      const match = task.match(pattern);
-      if (match) {
-        scores[ai].score += 1;
-        scores[ai].matches.push(match[0]);
-      }
-    }
-  }
-
-  // Find best match
-  let bestAI = 'claude'; // Default to Claude for complex/ambiguous tasks
-  let bestScore = 0;
-
-  for (const [ai, { score }] of Object.entries(scores)) {
-    if (score > bestScore) {
-      bestScore = score;
-      bestAI = ai;
-    }
-  }
-
-  // Calculate confidence (0-1)
-  const totalScore = Object.values(scores).reduce((sum, { score }) => sum + score, 0);
-  const confidence = totalScore > 0 ? bestScore / totalScore : 0.5;
-
-  return {
-    ai: bestAI,
-    confidence,
-    reasons: scores[bestAI].matches,
-  };
 }
 
 /**

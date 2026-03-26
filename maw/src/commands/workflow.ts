@@ -7,8 +7,6 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { WorkflowEngine, WorkflowContext } from '../core/workflow-engine.js';
-import { SessionManager } from '../core/session-manager.js';
-import { ClaudeAdapter, CodexAdapter, GeminiAdapter } from '../adapters/base-adapter.js';
 import { loadConfig } from '../config/loader.js';
 
 /**
@@ -19,12 +17,9 @@ export async function executeLiteWorkflow(task: string, options: { cd?: string }
 
   try {
     const config = loadConfig();
-    const engine = new WorkflowEngine();
+    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
 
-    // Register adapters
-    engine.registerAdapter(new ClaudeAdapter({ name: 'claude', enabled: true }));
-
-    const workflow = WorkflowEngine.createLiteWorkflow(task);
+    const workflow = WorkflowEngine.createLiteWorkflow();
     const context: WorkflowContext = {
       projectRoot: options.cd || process.cwd(),
       task,
@@ -56,38 +51,19 @@ export async function executePlanWorkflow(
 
   try {
     const config = loadConfig();
-    const engine = new WorkflowEngine();
-
-    // Register adapters based on config
-    engine.registerAdapter(new ClaudeAdapter({ name: 'claude', enabled: true }));
-
-    if (config.ai.codex.enabled) {
-      engine.registerAdapter(new CodexAdapter({
-        name: 'codex',
-        enabled: true,
-        cliPath: config.ai.codex.cliPath,
-      }));
-    }
-
-    if (config.ai.gemini.enabled) {
-      engine.registerAdapter(new GeminiAdapter({
-        name: 'gemini',
-        enabled: true,
-        cliPath: config.ai.gemini.cliPath,
-      }));
-    }
+    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
 
     // Create appropriate workflow
     let workflow;
     switch (options.level) {
       case 'lite-plan':
-        workflow = WorkflowEngine.createLitePlanWorkflow(task);
+        workflow = WorkflowEngine.createLitePlanWorkflow();
         break;
       case 'tdd-plan':
         workflow = WorkflowEngine.createTDDPlanWorkflow(task);
         break;
       default:
-        workflow = WorkflowEngine.createPlanWorkflow(task);
+        workflow = WorkflowEngine.createPlanWorkflow();
     }
 
     const context: WorkflowContext = {
@@ -130,28 +106,9 @@ export async function executeBrainstorm(
 
   try {
     const config = loadConfig();
-    const engine = new WorkflowEngine();
+    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
 
-    // Register all AI adapters
-    engine.registerAdapter(new ClaudeAdapter({ name: 'claude', enabled: true }));
-
-    if (config.ai.codex.enabled) {
-      engine.registerAdapter(new CodexAdapter({
-        name: 'codex',
-        enabled: true,
-        cliPath: config.ai.codex.cliPath,
-      }));
-    }
-
-    if (config.ai.gemini.enabled) {
-      engine.registerAdapter(new GeminiAdapter({
-        name: 'gemini',
-        enabled: true,
-        cliPath: config.ai.gemini.cliPath,
-      }));
-    }
-
-    const workflow = WorkflowEngine.createBrainstormWorkflow(topic, options.parallel);
+    const workflow = WorkflowEngine.createBrainstormWorkflow(options.parallel);
     const context: WorkflowContext = {
       projectRoot: options.cd || process.cwd(),
       task: topic,
@@ -208,26 +165,7 @@ export async function executeFivePhase(
 
   try {
     const config = loadConfig();
-    const engine = new WorkflowEngine();
-
-    // Register all AI adapters
-    engine.registerAdapter(new ClaudeAdapter({ name: 'claude', enabled: true }));
-
-    if (config.ai.codex.enabled) {
-      engine.registerAdapter(new CodexAdapter({
-        name: 'codex',
-        enabled: true,
-        cliPath: config.ai.codex.cliPath,
-      }));
-    }
-
-    if (config.ai.gemini.enabled) {
-      engine.registerAdapter(new GeminiAdapter({
-        name: 'gemini',
-        enabled: true,
-        cliPath: config.ai.gemini.cliPath,
-      }));
-    }
+    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
 
     const workflow = WorkflowEngine.createFivePhaseWorkflow(task);
 
