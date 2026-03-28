@@ -163,6 +163,10 @@ export class SessionManager {
       }
     }
 
+    this.evictIfOverLimit();
+  }
+
+  private evictIfOverLimit(): void {
     if (this.sessions.size > SessionManager.MAX_LOADED_SESSIONS) {
       const sorted = [...this.sessions.entries()]
         .sort((a, b) => new Date(b[1].metadata.updatedAt).getTime() - new Date(a[1].metadata.updatedAt).getTime());
@@ -249,6 +253,7 @@ export class SessionManager {
     }
 
     this.sessions.set(mawSessionId, session);
+    this.evictIfOverLimit();
     this.saveSessions();
     this.emitEvent('session.created', mawSessionId, {
       name: session.name,

@@ -16,6 +16,7 @@ import * as path from 'path';
 import { SessionManager } from '../core/session-manager.js';
 import { loadConfig } from '../config/loader.js';
 import { analyzeTaskForRouting } from '../core/semantic-router.js';
+import { validatePathWithinBase } from '../core/skill-registry.js';
 
 interface RalphLoopOptions {
   maxIterations: number;
@@ -222,9 +223,7 @@ async function executeClaudeNative(prompt: string, options: RalphLoopOptions): P
   // Write prompt to a temp file that Claude can read
   const workDir = path.resolve(options.cd);
   const promptFile = path.resolve(workDir, '.ralph-prompt.md');
-  if (!promptFile.startsWith(workDir + path.sep) && promptFile !== workDir) {
-    throw new Error('Path traversal detected: prompt file would escape working directory');
-  }
+  validatePathWithinBase(promptFile, workDir);
   fs.writeFileSync(promptFile, `# Ralph Loop Iteration\n\n${prompt}\n\n---\n\nPlease complete this task. When finished, include the completion promise in your response.`);
 
   // Return instruction for Claude

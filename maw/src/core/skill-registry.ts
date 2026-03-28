@@ -65,7 +65,7 @@ export interface SkillInstallOptions {
   targetPath?: string;
 }
 
-function validatePathWithinBase(targetPath: string, baseDir: string): void {
+export function validatePathWithinBase(targetPath: string, baseDir: string): void {
   const realBase = resolve(baseDir);
   const realTarget = resolve(targetPath);
   const rel = relative(realBase, realTarget);
