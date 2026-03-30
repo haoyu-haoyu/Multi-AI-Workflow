@@ -26,13 +26,19 @@ from typing import Optional, List, Dict, Any
 
 # ============= Configuration =============
 PROXY_BASE_URL = os.environ.get("GEMINI_PROXY_BASE_URL", "https://api.ikuncode.cc")
-PROXY_API_KEY = os.environ.get("GEMINI_PROXY_API_KEY", "sk-x3mS8a65tT1LT74RPCAJiCzjGVDN8rhPftFDvamplQhiuAaG")
+PROXY_API_KEY = os.environ.get("GEMINI_PROXY_API_KEY", "")
 IMAGE_MODEL = "gemini-3-pro-preview"
 TEXT_MODEL = "gemini-2.5-flash"
 
 
 def call_gemini_api(prompt: str, model: str = TEXT_MODEL, response_modalities: List[str] = None) -> dict:
     """Call Gemini API with optional image generation."""
+    if not PROXY_API_KEY:
+        return {
+            "success": False,
+            "error": "GEMINI_PROXY_API_KEY environment variable is required. "
+                     "Set it via: export GEMINI_PROXY_API_KEY='your-key-here'",
+        }
     url = f"{PROXY_BASE_URL}/v1/models/{model}:generateContent"
 
     request_body = {
