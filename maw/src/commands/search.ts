@@ -152,8 +152,9 @@ export async function searchCode(
         const lines = result.match_context.split('\n');
         lines.forEach((line) => {
           // Highlight the query in the output
+          const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           const highlighted = line.replace(
-            new RegExp(query, 'gi'),
+            new RegExp(escapedQuery, 'gi'),
             (match) => chalk.bgYellow.black(match)
           );
           console.log(chalk.dim('   │ ') + highlighted);

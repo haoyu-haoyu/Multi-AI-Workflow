@@ -81,7 +81,7 @@ def main():
             "error": f"The workspace root directory `{cd.absolute()}` does not exist."
         }
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        return
+        sys.exit(1)
 
     PROMPT = args.PROMPT
     if os.name == "nt":

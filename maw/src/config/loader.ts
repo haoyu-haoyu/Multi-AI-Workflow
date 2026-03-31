@@ -6,6 +6,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { z } from 'zod';
 
 // Configuration schema using Zod
@@ -113,7 +114,7 @@ export function loadConfig(projectRoot: string = process.cwd()): MAWConfig {
 
   // Load user-level configs (lowest priority)
   for (const relativePath of [...USER_CONFIG_PATHS].reverse()) {
-    const configPath = relativePath.replace('~', process.env.HOME || '');
+    const configPath = relativePath.replace('~', process.env.HOME || homedir());
     if (existsSync(configPath)) {
       try {
         const fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
@@ -155,7 +156,7 @@ export function saveConfig(
   projectRoot: string = process.cwd()
 ): void {
   const configPath = scope === 'user'
-    ? join(process.env.HOME || '~', '.maw', 'config.json')
+    ? join(process.env.HOME || homedir(), '.maw', 'config.json')
     : join(projectRoot, '.maw', 'config.json');
 
   const dir = join(configPath, '..');

@@ -279,39 +279,6 @@ skillCmd
   });
 
 // ============================================
-// Bridge Service (Python HTTP/WebSocket)
-// ============================================
-
-const bridgeCmd = program
-  .command('bridge')
-  .description('Manage AI bridge service');
-
-bridgeCmd
-  .command('start')
-  .description('Start bridge service')
-  .option('-p, --port <port>', 'Service port', '8765')
-  .action(async (options: { port: string }) => {
-    const { startBridge } = await import('./commands/bridge.js');
-    await startBridge(options);
-  });
-
-bridgeCmd
-  .command('status')
-  .description('Check bridge service status')
-  .action(async () => {
-    const { bridgeStatus } = await import('./commands/bridge.js');
-    await bridgeStatus();
-  });
-
-bridgeCmd
-  .command('stop')
-  .description('Stop bridge service')
-  .action(async () => {
-    const { stopBridge } = await import('./commands/bridge.js');
-    await stopBridge();
-  });
-
-// ============================================
 // Search Commands (CodexLens)
 // ============================================
 

@@ -18,9 +18,7 @@
     "commander": "^12.0.0",
     "chalk": "^5.3.0",
     "ora": "^8.0.0",
-    "inquirer": "^9.2.0",
     "zod": "^3.22.0",
-    "glob": "^10.3.0",
     "uuid": "^9.0.0"
   },
   "devDependencies": {

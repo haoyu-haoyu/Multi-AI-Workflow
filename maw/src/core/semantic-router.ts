@@ -175,9 +175,13 @@ function scoreTask(task: string): AIScore[] {
       }
     }
 
+    // Apply cost multiplier: cheaper AIs get a scoring bonus
+    // so equally-matched tasks prefer the cheaper option
+    const costAdjustedScore = totalScore * COST_MULTIPLIER[profile.cost];
+
     scores.push({
       ai,
-      score: totalScore,
+      score: costAdjustedScore,
       normalizedScore: 0, // computed below
       matchedKeywords,
       cost: profile.cost,
@@ -190,7 +194,7 @@ function scoreTask(task: string): AIScore[] {
     s.normalizedScore = s.score / maxScore;
   }
 
-  // Sort by score descending, break ties by cost (cheaper first)
+  // Sort by cost-adjusted score descending, break ties by cost (cheaper first)
   scores.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return AI_PROFILES[a.ai].cascadeOrder - AI_PROFILES[b.ai].cascadeOrder;

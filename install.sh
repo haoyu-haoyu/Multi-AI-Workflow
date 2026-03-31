@@ -29,15 +29,16 @@ npm install --silent
 echo "🔨 Building MAW CLI..."
 npm run build --silent
 
-# Step 3: Copy MAW CLI to global directory
+# Step 3: Copy MAW CLI to global directory (exclude node_modules, reinstall production deps)
 echo "📋 Installing MAW CLI to ~/.maw/..."
-cp -r "$SCRIPT_DIR/maw" "$MAW_HOME/"
+rsync -a --exclude='node_modules' "$SCRIPT_DIR/maw/" "$MAW_HOME/maw/"
+cd "$MAW_HOME/maw" && npm install --omit=dev --silent
 
 # Step 4: Install Python bridges
 echo "🐍 Installing Python bridges..."
 cd "$SCRIPT_DIR"
 if [ -d "bridges" ]; then
-    pip install -e bridges/ --quiet 2>/dev/null || pip3 install -e bridges/ --quiet 2>/dev/null || echo "⚠️  Python bridges installation skipped (pip not available)"
+    pip install bridges/ --quiet 2>/dev/null || pip3 install bridges/ --quiet 2>/dev/null || echo "⚠️  Python bridges installation skipped (pip not available)"
 fi
 
 # Step 5: Copy skills
@@ -102,5 +103,5 @@ echo ""
 echo "   3. Try a command:"
 echo "      maw workflow lite \"Hello MAW\""
 echo ""
-echo "📚 Documentation: https://github.com/SexyERIC0723/Multi-AI-Workflow"
+echo "📚 Documentation: https://github.com/haoyu-haoyu/Multi-AI-Workflow"
 echo ""
