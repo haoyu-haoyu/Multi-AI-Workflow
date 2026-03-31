@@ -87,6 +87,28 @@ workflowCmd
   });
 
 workflowCmd
+  .command('self-moa <task>')
+  .description('Self-MoA: Claude generates 3 perspectives, then synthesizes (high quality, single model)')
+  .option('--cd <dir>', 'Working directory', process.cwd())
+  .action(async (task: string, options: { cd: string }) => {
+    validateTaskInput(task);
+    const { executeSelfMoA } = await import('./commands/workflow.js');
+    await executeSelfMoA(task, options);
+  });
+
+workflowCmd
+  .command('auto <task>')
+  .description('Auto-select workflow based on task difficulty (recommended)')
+  .option('--cd <dir>', 'Working directory', process.cwd())
+  .option('-p, --parallel', 'Enable parallel execution', true)
+  .option('-v, --verbose', 'Show difficulty analysis', false)
+  .action(async (task: string, options: { cd: string; parallel: boolean; verbose: boolean }) => {
+    validateTaskInput(task);
+    const { executeAutoWorkflow } = await import('./commands/workflow.js');
+    await executeAutoWorkflow(task, options);
+  });
+
+workflowCmd
   .command('five-phase <task>')
   .description('5-Phase collaboration (Skills pattern): Context → Analysis → Prototype → Implement → Audit')
   .option('-p, --parallel', 'Enable parallel analysis', true)
@@ -324,6 +346,19 @@ program
   .action(async (options) => {
     const { openDashboard } = await import('./commands/view.js');
     await openDashboard(options);
+  });
+
+// ============================================
+// Stats & Insights (Self-Evolution Feedback)
+// ============================================
+
+program
+  .command('stats')
+  .description('Show execution statistics and AI success rates (self-evolution feedback)')
+  .option('--json', 'Output as JSON', false)
+  .action(async (options: { json: boolean }) => {
+    const { showStats } = await import('./commands/stats.js');
+    await showStats(options);
   });
 
 // ============================================

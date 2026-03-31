@@ -8,6 +8,8 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { WorkflowEngine, WorkflowContext } from '../core/workflow-engine.js';
 import { loadConfig } from '../config/loader.js';
+import { estimateTaskDifficulty } from '../core/semantic-router.js';
+import { composeWorkflow } from '../core/workflow-composer.js';
 
 /**
  * Execute Level 1: lite workflow
@@ -139,6 +141,107 @@ export async function executeBrainstorm(
     }
   } catch (error) {
     spinner.fail(chalk.red('Brainstorm error'));
+    console.error(error instanceof Error ? error.message : 'Unknown error');
+  }
+}
+
+/**
+ * Execute Self-MoA workflow - Claude generates multiple perspectives,
+ * then synthesizes the best approach. High quality, single model.
+ *
+ * Research (Self-MoA, 2025): outperforms multi-model MoA by 6.6%
+ */
+export async function executeSelfMoA(
+  task: string,
+  options: { cd?: string }
+): Promise<void> {
+  console.log(chalk.cyan('\n--- Self-MoA: Multi-Perspective Synthesis ---\n'));
+  const spinner = ora('Generating 3 expert perspectives in parallel...').start();
+
+  try {
+    const config = loadConfig();
+    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const workflow = WorkflowEngine.createSelfMoAWorkflow(task);
+    const context: WorkflowContext = {
+      projectRoot: options.cd || process.cwd(),
+      task,
+    };
+
+    const result = await engine.execute(workflow, context);
+
+    if (result.success) {
+      spinner.succeed(chalk.green('Self-MoA completed'));
+      console.log(chalk.dim('\nSession:'), result.session.mawSessionId);
+      for (const t of result.tasks) {
+        const icon = t.status === 'completed' ? chalk.green('v') : chalk.red('x');
+        console.log(`  ${icon} ${t.description}`);
+      }
+    } else {
+      spinner.fail(chalk.red('Self-MoA failed'));
+      console.error(chalk.red(result.error));
+    }
+  } catch (error) {
+    spinner.fail(chalk.red('Self-MoA error'));
+    console.error(error instanceof Error ? error.message : 'Unknown error');
+  }
+}
+
+/**
+ * Execute auto workflow - automatically selects the best workflow
+ * based on task difficulty estimation.
+ *
+ * Inspired by DAAO (WWW 2026) difficulty-aware orchestration
+ * and the 45% Threshold Rule.
+ */
+export async function executeAutoWorkflow(
+  task: string,
+  options: { cd?: string; parallel: boolean; verbose: boolean }
+): Promise<void> {
+  // Step 1: Estimate difficulty
+  const estimate = estimateTaskDifficulty(task);
+
+  if (options.verbose) {
+    console.log(chalk.cyan('\n--- Difficulty Analysis ---'));
+    console.log(chalk.dim('  Difficulty:'), chalk.bold(estimate.difficulty));
+    console.log(chalk.dim('  Score:'), estimate.score.toFixed(1));
+    console.log(chalk.dim('  Signals:'), estimate.signals.join(', ') || 'none');
+    console.log(chalk.dim('  Workflow:'), chalk.green(estimate.recommendedWorkflow));
+    console.log();
+  } else {
+    console.log(chalk.dim(`[auto] difficulty=${estimate.difficulty} -> workflow=${estimate.recommendedWorkflow}`));
+  }
+
+  // Step 2: Use adaptive workflow composer for dynamic workflow generation
+  const spinner = ora(`Executing adaptive ${estimate.difficulty} workflow...`).start();
+
+  try {
+    const config = loadConfig();
+    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const workflow = composeWorkflow(task);
+    const context: WorkflowContext = {
+      projectRoot: options.cd || process.cwd(),
+      task,
+    };
+
+    if (options.verbose) {
+      console.log(chalk.dim(`  Composed: ${workflow.phases.length} phases from ${workflow.description}`));
+    }
+
+    const result = await engine.execute(workflow, context);
+
+    if (result.success) {
+      spinner.succeed(chalk.green(`Auto workflow completed (${estimate.difficulty})`));
+      console.log(chalk.dim('\nSession:'), result.session.mawSessionId);
+      for (const t of result.tasks) {
+        const icon = t.status === 'completed' ? chalk.green('v') : chalk.red('x');
+        console.log(`  ${icon} [${t.assignedAI}] ${t.description}`);
+      }
+    } else {
+      spinner.fail(chalk.red('Auto workflow failed'));
+      console.error(chalk.red(result.error));
+    }
+  } catch (error) {
+    spinner.fail(chalk.red('Auto workflow error'));
     console.error(error instanceof Error ? error.message : 'Unknown error');
   }
 }

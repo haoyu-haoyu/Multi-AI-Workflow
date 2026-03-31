@@ -10,7 +10,8 @@ import { WorkflowEngine, WorkflowContext } from '../core/workflow-engine.js';
 import { SessionManager } from '../core/session-manager.js';
 import { ClaudeAdapter, CodexAdapter, GeminiAdapter, SandboxLevel } from '../adapters/base-adapter.js';
 import { loadConfig } from '../config/loader.js';
-import { analyzeTaskForRouting, AI_ROUTING_PATTERNS } from '../core/semantic-router.js';
+import { analyzeTaskForRouting, AI_PROFILES, estimateTaskDifficulty, buildCascadePlan } from '../core/semantic-router.js';
+import { getExecutionLogger } from '../core/execution-logger.js';
 
 interface DelegateOptions {
   sandbox: string;
@@ -229,6 +230,17 @@ export async function semanticRoute(
 
   // Analyze task
   const analysis = analyzeTaskForRouting(task);
+  const difficulty = estimateTaskDifficulty(task);
+
+  // Log the routing decision
+  getExecutionLogger().logRouting(task, {
+    selectedAI: analysis.ai,
+    confidence: analysis.confidence,
+    matchedKeywords: analysis.reasons,
+    ranking: analysis.ranking.map(r => ({ ai: r.ai, score: r.score })),
+    difficulty: difficulty.difficulty,
+    recommendedWorkflow: difficulty.recommendedWorkflow,
+  });
 
   // Apply preference override if specified
   let selectedAI = analysis.ai;
@@ -250,10 +262,20 @@ export async function semanticRoute(
     console.log(chalk.dim('  Matched keywords:'), analysis.reasons.join(', '));
   }
 
+  // Show ranking
+  if (analysis.ranking) {
+    console.log(chalk.dim('  Ranking:'), analysis.ranking.map(r => `${r.ai}(${r.score.toFixed(1)})`).join(' > '));
+  }
+
+  if (analysis.cascadeRecommended) {
+    const cascade = buildCascadePlan(task);
+    console.log(chalk.yellow('  Cascade:'), cascade.map(s => `${s.ai}[${s.cost}]`).join(' -> '));
+  }
+
   // Show AI strengths
-  const strengths = AI_ROUTING_PATTERNS[selectedAI]?.strength || [];
-  if (strengths.length > 0) {
-    console.log(chalk.dim('  AI strengths:'), strengths.join(', '));
+  const profile = AI_PROFILES[selectedAI];
+  if (profile?.strengths.length) {
+    console.log(chalk.dim('  AI strengths:'), profile.strengths.join(', '));
   }
 
   console.log();

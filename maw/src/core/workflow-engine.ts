@@ -12,6 +12,7 @@ import type { MAWConfig } from '../config/loader.js';
 import { v4 as uuidv4 } from 'uuid';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join, resolve, relative } from 'path';
+import { getExecutionLogger } from './execution-logger.js';
 
 export type PhaseType = 'planning' | 'execution' | 'review' | 'delegation';
 export type AIRole = 'claude' | 'codex' | 'gemini' | 'litellm' | 'auto';
@@ -223,6 +224,8 @@ export class WorkflowEngine {
 
     const tasks: TaskRecord[] = [];
     const phaseOutputs: PhaseOutputs = {};
+    const startTime = Date.now();
+    const logger = getExecutionLogger();
 
     try {
       // Group phases into execution layers based on dependencies
@@ -267,6 +270,14 @@ export class WorkflowEngine {
       // Mark session as completed
       this.sessionManager.updateStatus(session.mawSessionId, 'completed');
 
+      logger.logWorkflow(context.task, {
+        workflowName: workflow.name,
+        level: workflow.level,
+        success: true,
+        durationMs: Date.now() - startTime,
+        phaseCount: workflow.phases.length,
+      });
+
       return {
         success: true,
         session,
@@ -275,11 +286,21 @@ export class WorkflowEngine {
     } catch (error) {
       this.sessionManager.updateStatus(session.mawSessionId, 'paused');
 
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.logWorkflow(context.task, {
+        workflowName: workflow.name,
+        level: workflow.level,
+        success: false,
+        durationMs: Date.now() - startTime,
+        phaseCount: workflow.phases.length,
+        error: errorMsg,
+      });
+
       return {
         success: false,
         session,
         tasks,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMsg,
       };
     }
   }
@@ -596,14 +617,25 @@ export class WorkflowEngine {
   }
 
   /**
-   * Build context section from accumulated phase outputs
+   * Build context section from accumulated phase outputs.
+   *
+   * MoA enhancement (Mixture-of-Agents, ICLR 2025 Spotlight):
+   * When moaMode is true, passes ALL accumulated outputs to the agent,
+   * not just declared input dependencies. Research shows LLMs produce
+   * better responses when given outputs from other models, even weaker ones.
    */
-  private buildPhaseContext(phaseOutputs: PhaseOutputs, inputs: string[]): string {
+  private buildPhaseContext(
+    phaseOutputs: PhaseOutputs,
+    inputs: string[],
+    moaMode: boolean = false
+  ): string {
     const sections: string[] = [];
-    for (const input of inputs) {
-      if (phaseOutputs[input]) {
-        const sanitized = this.sanitizePhaseOutput(phaseOutputs[input]);
-        sections.push(`--- ${input} ---\n${sanitized}`);
+    const keysToInclude = moaMode ? Object.keys(phaseOutputs) : inputs;
+
+    for (const key of keysToInclude) {
+      if (phaseOutputs[key]) {
+        const sanitized = this.sanitizePhaseOutput(phaseOutputs[key]);
+        sections.push(`--- ${key} ---\n${sanitized}`);
       }
     }
     if (sections.length === 0) return '';
@@ -640,7 +672,8 @@ CONSTRAINTS: Maximum 10 tasks, clear dependencies
     phaseOutputs: PhaseOutputs = {}
   ): string {
     const config = phase.config || {};
-    const priorContext = this.buildPhaseContext(phaseOutputs, phase.inputs);
+    const moaMode = config.moaMode === true;
+    const priorContext = this.buildPhaseContext(phaseOutputs, phase.inputs, moaMode);
     return `
 ${config.prompt || context.task}
 
@@ -882,6 +915,7 @@ Task: ${task}`,
           assignedAI: 'claude',
           inputs: ['codex-analysis', 'gemini-analysis'],
           outputs: ['guidance-specification'],
+          config: { moaMode: true },
         },
       ],
       aiAssignment: {
@@ -1032,6 +1066,7 @@ Provide:
           },
         },
         // Phase 3: Prototype Generation (Read-only, unified diff)
+        // MoA enabled: receives ALL prior outputs for maximum context
         {
           id: 'prototype',
           name: 'Prototype Generation',
@@ -1040,6 +1075,7 @@ Provide:
           inputs: ['codex-analysis', 'gemini-analysis', 'relevant-files'],
           outputs: ['prototype-diff'],
           config: {
+            moaMode: true,
             sandbox: 'read-only', // Critical: External AIs cannot write files
             prompt: `Based on the analysis, generate a unified diff patch for the implementation.
 
@@ -1114,6 +1150,100 @@ Generate the minimal diff needed to implement the task.`,
       },
       parallelConfig: {
         maxConcurrency: 2,
+        dependencyAware: true,
+      },
+    };
+  }
+
+  /**
+   * Self-MoA workflow: Claude generates multiple perspectives, then synthesizes.
+   *
+   * Research (Self-MoA, 2025): ensembling outputs from a single top-performing
+   * LLM outperforms standard multi-model MoA by 6.6% on AlpacaEval 2.0.
+   * This is cheaper than multi-model and sometimes better.
+   */
+  static createSelfMoAWorkflow(task: string): WorkflowDefinition {
+    return {
+      name: 'self-moa',
+      level: 'plan',
+      description: 'Self-MoA: Claude generates 3 perspectives, then synthesizes the best approach',
+      phases: [
+        {
+          id: 'perspective-architect',
+          name: 'Architect Perspective',
+          type: 'planning',
+          assignedAI: 'claude',
+          inputs: ['task'],
+          outputs: ['architect-view'],
+          config: {
+            prompt: `As a Software Architect, analyze this task and provide your perspective:
+${task}
+
+Focus on: system design, component boundaries, scalability, trade-offs.
+Be specific and actionable.`,
+          },
+        },
+        {
+          id: 'perspective-developer',
+          name: 'Developer Perspective',
+          type: 'planning',
+          assignedAI: 'claude',
+          inputs: ['task'],
+          outputs: ['developer-view'],
+          config: {
+            prompt: `As a Senior Developer, analyze this task and provide your perspective:
+${task}
+
+Focus on: implementation details, code patterns, edge cases, testing strategy.
+Be specific and actionable.`,
+          },
+        },
+        {
+          id: 'perspective-reviewer',
+          name: 'Reviewer Perspective',
+          type: 'planning',
+          assignedAI: 'claude',
+          inputs: ['task'],
+          outputs: ['reviewer-view'],
+          config: {
+            prompt: `As a Code Reviewer and Security Auditor, analyze this task and provide your perspective:
+${task}
+
+Focus on: potential pitfalls, security concerns, performance issues, maintainability.
+Be specific and actionable.`,
+          },
+        },
+        {
+          id: 'synthesize',
+          name: 'Synthesize Best Approach',
+          type: 'planning',
+          assignedAI: 'claude',
+          inputs: ['architect-view', 'developer-view', 'reviewer-view'],
+          outputs: ['synthesized-plan'],
+          config: {
+            moaMode: true,
+            prompt: `You have received three expert perspectives on this task. Synthesize them into a single, optimal implementation plan that incorporates the best insights from each perspective.
+
+Task: ${task}
+
+Create a unified plan that:
+1. Adopts the best architectural approach
+2. Includes practical implementation details
+3. Addresses all identified risks and concerns
+4. Provides clear, actionable steps`,
+          },
+        },
+        {
+          id: 'execute',
+          name: 'Execute Synthesized Plan',
+          type: 'execution',
+          assignedAI: 'claude',
+          inputs: ['synthesized-plan'],
+          outputs: ['implementation'],
+        },
+      ],
+      parallelConfig: {
+        maxConcurrency: 3, // All 3 perspectives can run in parallel
         dependencyAware: true,
       },
     };
