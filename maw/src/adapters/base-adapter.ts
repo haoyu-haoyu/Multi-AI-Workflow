@@ -272,8 +272,7 @@ export class ClaudeAdapter extends BaseAIAdapter {
         proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
         proc.on('error', (err: Error) => {
           clearTimer();
-          // Claude CLI not available — fall back to passthrough message
-          resolve(`[Claude Native] ${options.prompt}\n\n(Claude CLI not found: ${err.message}. Install via: npm install -g @anthropic-ai/claude-code)`);
+          reject(new Error(`Claude CLI not found: ${err.message}. Install via: npm install -g @anthropic-ai/claude-code`));
         });
         proc.on('close', (code: number | null) => {
           clearTimer();
@@ -292,14 +291,14 @@ export class ClaudeAdapter extends BaseAIAdapter {
         undefined,
         Date.now() - startTime
       );
-    } catch {
-      // Fallback if Claude CLI is not available
+    } catch (error) {
       return this.buildResult(
-        true,
-        `[Claude Native] Task delegated: ${options.prompt.substring(0, 100)}...`,
-        options.sessionId,
+        false,
+        '',
         undefined,
-        Date.now() - startTime
+        undefined,
+        Date.now() - startTime,
+        error instanceof Error ? error.message : 'Claude CLI execution failed'
       );
     }
   }

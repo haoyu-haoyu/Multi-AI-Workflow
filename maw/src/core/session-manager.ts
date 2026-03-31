@@ -187,13 +187,25 @@ export class SessionManager {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
+    // Write full session data to project-local file
     const data: Record<string, UnifiedSession> = {};
     for (const [id, session] of this.sessions) {
       data[id] = session;
     }
     const jsonData = JSON.stringify(data, null, 2);
     this.atomicWriteFileSync(this.persistPath, jsonData);
-    this.atomicWriteFileSync(this.globalPersistPath, jsonData);
+
+    // Write only lightweight refs to global file (prevents cross-project leaking)
+    const globalData: Record<string, { name: string; projectRoot: string; status: string; updatedAt: Date }> = {};
+    for (const [id, session] of this.sessions) {
+      globalData[id] = {
+        name: session.name,
+        projectRoot: session.sharedContext.projectRoot,
+        status: session.metadata.status,
+        updatedAt: session.metadata.updatedAt,
+      };
+    }
+    this.atomicWriteFileSync(this.globalPersistPath, JSON.stringify(globalData, null, 2));
   }
 
   /**

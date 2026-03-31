@@ -13,6 +13,7 @@ import ora from 'ora';
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { homedir } from 'os';
 import { SessionManager } from '../core/session-manager.js';
 import { loadConfig } from '../config/loader.js';
 import { analyzeTaskForRouting } from '../core/semantic-router.js';
@@ -239,7 +240,7 @@ async function executeCodexBridge(
   sessionId: string
 ): Promise<string> {
   const bridgePath = path.join(
-    process.env.HOME || '',
+    process.env.HOME || homedir(),
     '.maw/skills/collaborating-with-codex/scripts/codex_bridge.py'
   );
 
@@ -247,7 +248,7 @@ async function executeCodexBridge(
   if (!fs.existsSync(bridgePath)) {
     // Fallback to maw_bridges
     const fallbackPath = path.join(
-      process.env.HOME || '',
+      process.env.HOME || homedir(),
       '.local/lib/python3.11/site-packages/maw_bridges/codex_bridge.py'
     );
     if (fs.existsSync(fallbackPath)) {
@@ -268,7 +269,7 @@ async function executeGeminiBridge(
   sessionId: string
 ): Promise<string> {
   const bridgePath = path.join(
-    process.env.HOME || '',
+    process.env.HOME || homedir(),
     '.maw/skills/collaborating-with-gemini/scripts/gemini_bridge.py'
   );
 
@@ -282,6 +283,8 @@ async function executeGeminiBridge(
 /**
  * Execute Python bridge script
  */
+const BRIDGE_TIMEOUT_MS = 120_000;
+
 async function executePythonBridge(
   bridgePath: string,
   prompt: string,
@@ -301,6 +304,13 @@ async function executePythonBridge(
       env: { ...process.env },
     });
 
+    // Enforce timeout to prevent hanging on network issues or infinite loops
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM');
+      setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 5000);
+      reject(new Error(`Bridge timed out after ${BRIDGE_TIMEOUT_MS / 1000}s`));
+    }, BRIDGE_TIMEOUT_MS);
+
     let stdout = '';
     let stderr = '';
 
@@ -313,6 +323,7 @@ async function executePythonBridge(
     });
 
     proc.on('close', (code) => {
+      clearTimeout(timer);
       if (code === 0) {
         resolve(stdout);
       } else {
@@ -321,6 +332,7 @@ async function executePythonBridge(
     });
 
     proc.on('error', (err) => {
+      clearTimeout(timer);
       reject(err);
     });
   });

@@ -5,26 +5,35 @@
  */
 
 import chalk from 'chalk';
-import { spawn, exec } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
-import { platform } from 'os';
+import { platform, homedir } from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
- * Open URL in default browser
+ * Open URL in default browser (safe — no shell interpolation)
  */
 function openBrowser(url: string): void {
-  const cmd = platform() === 'darwin'
-    ? 'open'
-    : platform() === 'win32'
-      ? 'start'
-      : 'xdg-open';
+  const plat = platform();
+  let cmd: string;
+  let args: string[];
 
-  exec(`${cmd} ${url}`, (err) => {
+  if (plat === 'darwin') {
+    cmd = 'open';
+    args = [url];
+  } else if (plat === 'win32') {
+    cmd = 'cmd';
+    args = ['/c', 'start', '', url];
+  } else {
+    cmd = 'xdg-open';
+    args = [url];
+  }
+
+  execFile(cmd, args, (err) => {
     if (err) {
       console.log(chalk.dim(`\nCould not open browser automatically. Please visit:`));
       console.log(chalk.cyan(url));

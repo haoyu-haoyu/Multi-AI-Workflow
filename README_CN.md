@@ -105,7 +105,7 @@
 
 ```bash
 # 克隆并运行安装脚本
-git clone https://github.com/SexyERIC0723/Multi-AI-Workflow.git
+git clone https://github.com/haoyu-haoyu/Multi-AI-Workflow.git
 cd Multi-AI-Workflow
 ./install.sh
 
@@ -126,7 +126,7 @@ maw --version
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/SexyERIC0723/Multi-AI-Workflow.git
+git clone https://github.com/haoyu-haoyu/Multi-AI-Workflow.git
 cd Multi-AI-Workflow
 
 # 2. 安装 Node.js 依赖
@@ -848,11 +848,11 @@ git push origin feature/amazing-feature
 
 如果你觉得 MAW 有用，请考虑给我们一个 Star。
 
-[![GitHub stars](https://img.shields.io/github/stars/SexyERIC0723/Multi-AI-Workflow?style=social)](https://github.com/SexyERIC0723/Multi-AI-Workflow)
+[![GitHub stars](https://img.shields.io/github/stars/haoyu-haoyu/Multi-AI-Workflow?style=social)](https://github.com/haoyu-haoyu/Multi-AI-Workflow)
 
 ---
 
-**由 [SexyERIC0723](https://github.com/SexyERIC0723) 构建**
+**由 [haoyu-haoyu](https://github.com/haoyu-haoyu) 构建**
 
 *让 AI 协作触手可及*
 

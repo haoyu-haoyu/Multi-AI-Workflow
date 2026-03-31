@@ -693,9 +693,9 @@ Please provide your analysis and implementation as unified diff format where app
     session: UnifiedSession,
     phaseOutputs: PhaseOutputs = {}
   ): string {
-    // Gather all available phase outputs for review context
+    // Gather all available phase outputs for review context (sanitized)
     const allOutputs = Object.entries(phaseOutputs)
-      .map(([key, value]) => `--- ${key} ---\n${value}`)
+      .map(([key, value]) => `--- ${key} ---\n${this.sanitizePhaseOutput(value)}`)
       .join('\n\n');
     return `
 Review the implementation for: ${context.task}

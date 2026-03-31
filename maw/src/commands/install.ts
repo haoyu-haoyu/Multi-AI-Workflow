@@ -5,6 +5,7 @@
 import chalk from 'chalk';
 import { existsSync, mkdirSync, cpSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { createDefaultConfig } from '../config/loader.js';
 
 interface InstallOptions {
@@ -16,7 +17,7 @@ interface InstallOptions {
 export async function install(options: InstallOptions): Promise<void> {
   const isGlobal = options.mode === 'Global';
   const targetBase = isGlobal
-    ? join(process.env.HOME || '~', '.maw')
+    ? join(process.env.HOME || homedir(), '.maw')
     : join(process.cwd(), '.maw');
 
   console.log(chalk.cyan(`Installing MAW (${options.mode} mode)...`));
@@ -33,7 +34,7 @@ export async function install(options: InstallOptions): Promise<void> {
   }
 
   // Create default config
-  createDefaultConfig(isGlobal ? process.env.HOME || '~' : process.cwd());
+  createDefaultConfig(isGlobal ? process.env.HOME || homedir() : process.cwd());
   console.log(chalk.dim('  Created: config.json'));
 
   // Install AI bridge skills if requested

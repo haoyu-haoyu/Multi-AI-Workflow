@@ -9,6 +9,7 @@
 import { existsSync, readdirSync, readFileSync, mkdirSync, cpSync, realpathSync, lstatSync } from 'fs';
 import { join, dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 export type SkillType = 'built-in' | 'ai-bridge' | 'custom';
 export type SkillRuntime = 'typescript' | 'python' | 'shell';
@@ -86,7 +87,7 @@ export class SkillRegistry {
     this.projectRoot = projectRoot;
     this.searchPaths = [
       join(projectRoot, '.maw', 'skills'),           // Project level
-      join(process.env.HOME || '~', '.maw', 'skills'), // User level
+      join(process.env.HOME || homedir(), '.maw', 'skills'), // User level
     ];
   }
 
@@ -358,7 +359,7 @@ export class SkillRegistry {
     // Determine target path
     const targetBase = options.targetPath ||
       (options.scope === 'user'
-        ? join(process.env.HOME || '~', '.maw', 'skills')
+        ? join(process.env.HOME || homedir(), '.maw', 'skills')
         : join(this.projectRoot, '.maw', 'skills'));
 
     // Ensure target directory exists

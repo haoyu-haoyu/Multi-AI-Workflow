@@ -105,7 +105,7 @@ Single session ID syncs across all AI agents.
 
 ```bash
 # Clone and run the installer
-git clone https://github.com/SexyERIC0723/Multi-AI-Workflow.git
+git clone https://github.com/haoyu-haoyu/Multi-AI-Workflow.git
 cd Multi-AI-Workflow
 ./install.sh
 
@@ -126,7 +126,7 @@ The installer will:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/SexyERIC0723/Multi-AI-Workflow.git
+git clone https://github.com/haoyu-haoyu/Multi-AI-Workflow.git
 cd Multi-AI-Workflow
 
 # 2. Install Node.js dependencies
@@ -760,11 +760,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 If you find MAW useful, please consider giving us a star.
 
-[![GitHub stars](https://img.shields.io/github/stars/SexyERIC0723/Multi-AI-Workflow?style=social)](https://github.com/SexyERIC0723/Multi-AI-Workflow)
+[![GitHub stars](https://img.shields.io/github/stars/haoyu-haoyu/Multi-AI-Workflow?style=social)](https://github.com/haoyu-haoyu/Multi-AI-Workflow)
 
 ---
 
-**Built by [SexyERIC0723](https://github.com/SexyERIC0723)**
+**Built by [haoyu-haoyu](https://github.com/haoyu-haoyu)**
 
 *Making AI collaboration accessible to everyone*
 
