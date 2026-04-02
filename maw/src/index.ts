@@ -16,6 +16,9 @@ export { BaseAIAdapter, type AIExecutionResult } from './adapters/base-adapter.j
 export { loadConfig, type MAWConfig } from './config/loader.js';
 export { MAWRuntime } from './runtime/maw-runtime.js';
 export type { DelegateRunRequest, DelegateRunResult, PolicyContext } from './runtime/run-types.js';
+export { ProviderRegistry, createConfiguredProviderRegistry } from './providers/provider-registry.js';
+export { CapabilityRegistry } from './capabilities/capability-registry.js';
+export type { CapabilityDescriptor } from './capabilities/capability-types.js';
 export {
   DefaultSessionPathProvider,
   StaticSessionPathProvider,

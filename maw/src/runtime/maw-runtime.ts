@@ -1,41 +1,22 @@
 import { v4 as uuidv4 } from 'uuid';
-import type {
-  AIAdapterConfig,
-  AIExecutionResult,
-  BaseAIAdapter,
-} from '../adapters/base-adapter.js';
-import {
-  ClaudeAdapter,
-  CodexAdapter,
-  GeminiAdapter,
-} from '../adapters/base-adapter.js';
+import type { BaseAIAdapter } from '../adapters/base-adapter.js';
 import type { MAWConfig } from '../config/loader.js';
 import {
   SessionManager,
   type SessionManagerOptions,
   type UnifiedSession,
 } from '../core/session-manager.js';
+import {
+  ProviderRegistry,
+  createConfiguredProviderRegistry,
+} from '../providers/provider-registry.js';
 import type { DelegateRunRequest, DelegateRunResult } from './run-types.js';
 
-type RuntimeAI = 'claude' | 'codex' | 'gemini';
-
-function createAdapterConfig(
-  name: RuntimeAI,
-  overrides: Partial<AIAdapterConfig> = {},
-): AIAdapterConfig {
-  return {
-    name,
-    enabled: true,
-    ...overrides,
-  };
-}
-
 export class MAWRuntime {
-  private readonly adapters = new Map<string, BaseAIAdapter>();
-
   constructor(
     private readonly sessionManager: SessionManager,
     private readonly projectRoot: string = process.cwd(),
+    private readonly providerRegistry: ProviderRegistry = new ProviderRegistry(),
   ) {}
 
   static createConfiguredRuntime(
@@ -43,38 +24,27 @@ export class MAWRuntime {
     projectRoot: string = process.cwd(),
     sessionOptions?: SessionManagerOptions,
   ): MAWRuntime {
-    const runtime = new MAWRuntime(new SessionManager(projectRoot, sessionOptions), projectRoot);
-    runtime.registerAdapter(new ClaudeAdapter(createAdapterConfig('claude')));
-
-    if (config.ai.codex.enabled) {
-      runtime.registerAdapter(
-        new CodexAdapter(createAdapterConfig('codex', { cliPath: config.ai.codex.cliPath })),
-      );
-    }
-
-    if (config.ai.gemini.enabled) {
-      runtime.registerAdapter(
-        new GeminiAdapter(createAdapterConfig('gemini', { cliPath: config.ai.gemini.cliPath })),
-      );
-    }
-
-    return runtime;
+    return new MAWRuntime(
+      new SessionManager(projectRoot, sessionOptions),
+      projectRoot,
+      createConfiguredProviderRegistry(config),
+    );
   }
 
   registerAdapter(adapter: BaseAIAdapter): void {
-    this.adapters.set(adapter.name.toLowerCase(), adapter);
+    this.providerRegistry.register(adapter);
   }
 
   listProviders(): string[] {
-    return Array.from(this.adapters.keys()).sort();
+    return this.providerRegistry.names();
   }
 
   hasProvider(name: string): boolean {
-    return this.adapters.has(name.toLowerCase());
+    return this.providerRegistry.has(name);
   }
 
   getProvider(name: string): BaseAIAdapter | undefined {
-    return this.adapters.get(name.toLowerCase());
+    return this.providerRegistry.get(name);
   }
 
   async delegate(request: DelegateRunRequest): Promise<DelegateRunResult> {

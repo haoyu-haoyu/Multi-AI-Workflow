@@ -10,6 +10,8 @@ import { existsSync, readdirSync, readFileSync, mkdirSync, cpSync, realpathSync,
 import { join, dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
+import { CapabilityRegistry } from '../capabilities/capability-registry.js';
+import type { CapabilityDescriptor } from '../capabilities/capability-types.js';
 
 export type SkillType = 'built-in' | 'ai-bridge' | 'custom';
 export type SkillRuntime = 'typescript' | 'python' | 'shell';
@@ -34,6 +36,16 @@ export interface SkillSecurityConfig {
   requiredPermissions: string[];
 }
 
+export interface SkillCapabilityConfig {
+  id: string;
+  name?: string;
+  description?: string;
+  provider?: string;
+  entryPoint?: string;
+  metadata?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
 export interface SkillManifest {
   /** Unique skill name */
   name: string;
@@ -51,6 +63,8 @@ export interface SkillManifest {
   runtime: SkillRuntimeConfig;
   /** Security configuration */
   security: SkillSecurityConfig;
+  /** Explicit capability declarations exposed by the skill */
+  capabilities?: SkillCapabilityConfig[];
   /** Triggers/keywords that activate this skill */
   triggers?: string[];
   /** Whether skill is currently enabled */
@@ -353,6 +367,56 @@ export class SkillRegistry {
   }
 
   /**
+   * Project skills into runtime capability descriptors.
+   * If a skill does not declare explicit capabilities, we derive one fallback capability.
+   */
+  listCapabilities(): CapabilityDescriptor[] {
+    return this.listSkills().flatMap((skill) => this.toCapabilityDescriptors(skill));
+  }
+
+  /**
+   * Build a capability registry from discovered skills.
+   */
+  buildCapabilityRegistry(): CapabilityRegistry {
+    const registry = new CapabilityRegistry();
+    registry.registerMany(this.listCapabilities());
+    return registry;
+  }
+
+  private toCapabilityDescriptors(skill: SkillManifest): CapabilityDescriptor[] {
+    if (skill.capabilities && skill.capabilities.length > 0) {
+      return skill.capabilities.map((capability) => ({
+        id: capability.id,
+        name: capability.name || capability.id,
+        description: capability.description || skill.description,
+        source: 'skill',
+        provider: capability.provider || skill.bridge?.targetAI,
+        runtime: skill.runtime.language,
+        entryPoint: capability.entryPoint || skill.runtime.entryPoint,
+        security: skill.security,
+        triggers: skill.triggers || [],
+        enabled: capability.enabled ?? skill.enabled,
+        metadata: capability.metadata,
+      }));
+    }
+
+    return [
+      {
+        id: `skill.${skill.name}`,
+        name: skill.name,
+        description: skill.description,
+        source: 'skill',
+        provider: skill.bridge?.targetAI,
+        runtime: skill.runtime.language,
+        entryPoint: skill.runtime.entryPoint,
+        security: skill.security,
+        triggers: skill.triggers || [],
+        enabled: skill.enabled,
+      },
+    ];
+  }
+
+  /**
    * Install skill from source
    */
   async install(source: string, options: SkillInstallOptions): Promise<void> {
@@ -457,6 +521,13 @@ maw skill run ${name} --args "..."
         defaultSandbox: 'read-only',
         requiredPermissions: [],
       },
+      capabilities: [
+        {
+          id: `skill.${name}`,
+          name,
+          description: `Generated capability for ${name}`,
+        },
+      ],
     };
     writeFileSync(join(targetPath, 'skill.json'), JSON.stringify(skillJson, null, 2));
 
