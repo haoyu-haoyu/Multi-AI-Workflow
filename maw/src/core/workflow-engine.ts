@@ -6,13 +6,18 @@
  */
 
 import { SessionManager, UnifiedSession, WorkflowLevel, TaskRecord } from './session-manager.js';
-import { BaseAIAdapter, AIExecutionResult, SandboxLevel, ClaudeAdapter, CodexAdapter, GeminiAdapter } from '../adapters/base-adapter.js';
+import { BaseAIAdapter, AIExecutionResult, SandboxLevel } from '../adapters/base-adapter.js';
 import { SkillRegistry } from './skill-registry.js';
 import type { MAWConfig } from '../config/loader.js';
 import { v4 as uuidv4 } from 'uuid';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join, resolve, relative } from 'path';
 import { getExecutionLogger } from './execution-logger.js';
+import {
+  ProviderRegistry,
+  createConfiguredProviderRegistry,
+} from '../providers/provider-registry.js';
+import type { CapabilityDescriptor } from '../capabilities/capability-types.js';
 
 export type PhaseType = 'planning' | 'execution' | 'review' | 'delegation';
 export type AIRole = 'claude' | 'codex' | 'gemini' | 'litellm' | 'auto';
@@ -154,21 +159,23 @@ function safePathInDir(baseDir: string, filename: string): string {
  * Workflow Engine - Orchestrates multi-AI task execution
  */
 export class WorkflowEngine {
-  private sessionManager: SessionManager;
-  private skillRegistry: SkillRegistry;
-  private adapters: Map<string, BaseAIAdapter> = new Map();
-  private projectRoot: string;
-  private taskDir: string;
+  private readonly sessionManager: SessionManager;
+  private readonly skillRegistry: SkillRegistry;
+  private readonly providerRegistry: ProviderRegistry;
+  private readonly projectRoot: string;
+  private readonly taskDir: string;
 
   constructor(
     projectRoot: string = process.cwd(),
     sessionManager?: SessionManager,
-    skillRegistry?: SkillRegistry
+    skillRegistry?: SkillRegistry,
+    providerRegistry?: ProviderRegistry,
   ) {
     this.projectRoot = projectRoot;
     this.taskDir = join(projectRoot, '.task');
     this.sessionManager = sessionManager || new SessionManager(projectRoot);
     this.skillRegistry = skillRegistry || new SkillRegistry(projectRoot);
+    this.providerRegistry = providerRegistry || new ProviderRegistry();
 
     this.ensureDirectories();
   }
@@ -183,29 +190,35 @@ export class WorkflowEngine {
    * Register an AI adapter
    */
   registerAdapter(adapter: BaseAIAdapter): void {
-    this.adapters.set(adapter.name, adapter);
+    this.providerRegistry.register(adapter);
   }
 
   /**
    * Create an engine pre-configured with adapters from the MAW config
    */
   static createConfiguredEngine(config: MAWConfig, projectRoot: string = process.cwd()): WorkflowEngine {
-    const engine = new WorkflowEngine(projectRoot);
-    engine.registerAdapter(new ClaudeAdapter({ name: 'claude', enabled: true }));
-    if (config.ai.codex.enabled) {
-      engine.registerAdapter(new CodexAdapter({ name: 'codex', enabled: true, cliPath: config.ai.codex.cliPath }));
-    }
-    if (config.ai.gemini.enabled) {
-      engine.registerAdapter(new GeminiAdapter({ name: 'gemini', enabled: true, cliPath: config.ai.gemini.cliPath }));
-    }
-    return engine;
+    return new WorkflowEngine(projectRoot, undefined, undefined, createConfiguredProviderRegistry(config));
   }
 
   /**
    * Get adapter by name
    */
   getAdapter(name: string): BaseAIAdapter | undefined {
-    return this.adapters.get(name);
+    return this.providerRegistry.get(name);
+  }
+
+  /**
+   * List registered providers
+   */
+  listProviders(): string[] {
+    return this.providerRegistry.names();
+  }
+
+  /**
+   * List capabilities projected from installed skills.
+   */
+  listCapabilities(): CapabilityDescriptor[] {
+    return this.skillRegistry.listCapabilities();
   }
 
   /**
@@ -419,7 +432,7 @@ export class WorkflowEngine {
     phaseOutputs: PhaseOutputs = {}
   ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
-    const adapter = this.adapters.get(phase.assignedAI || 'claude');
+    const adapter = this.getAdapter(phase.assignedAI || 'claude');
 
     if (!adapter) {
       return { success: false, tasks, error: 'No adapter available for planning' };
@@ -455,10 +468,10 @@ export class WorkflowEngine {
         }, null, 2));
 
         // Link session ID if returned
-        if (result.sessionId) {
+        if (result.sessionId && this.isLinkedSessionProvider(adapter.name)) {
           await this.sessionManager.linkExternalSession(
             session,
-            adapter.name as 'codex' | 'gemini',
+            adapter.name,
             result.sessionId
           );
         }
@@ -490,7 +503,7 @@ export class WorkflowEngine {
   ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
     const assignedAI = phase.assignedAI || 'codex';
-    const adapter = this.adapters.get(assignedAI);
+    const adapter = this.getAdapter(assignedAI);
 
     if (!adapter) {
       return { success: false, tasks, error: `No adapter for ${assignedAI}` };
@@ -523,10 +536,10 @@ export class WorkflowEngine {
         taskRecord.result = result.content;
 
         // Save SESSION_ID for multi-turn support
-        if (result.sessionId) {
+        if (result.sessionId && this.isLinkedSessionProvider(assignedAI)) {
           await this.sessionManager.linkExternalSession(
             session,
-            assignedAI as 'codex' | 'gemini',
+            assignedAI,
             result.sessionId
           );
         }
@@ -571,7 +584,7 @@ export class WorkflowEngine {
     phaseOutputs: PhaseOutputs = {}
   ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
-    const adapter = this.adapters.get(phase.assignedAI || 'claude');
+    const adapter = this.getAdapter(phase.assignedAI || 'claude');
 
     if (!adapter) {
       return { success: true, tasks }; // Review is optional
@@ -708,6 +721,10 @@ Check for:
 
 ${allOutputs ? `IMPLEMENTATION OUTPUTS:\n${allOutputs}` : `Session history: ${session.sharedContext.taskHistory.length} tasks completed`}
     `.trim();
+  }
+
+  private isLinkedSessionProvider(provider: string): provider is keyof UnifiedSession['aiSessions'] {
+    return provider === 'claude' || provider === 'codex' || provider === 'gemini' || provider === 'litellm';
   }
 
   // ============================================
