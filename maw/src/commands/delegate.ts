@@ -120,7 +120,7 @@ export async function executeCollaboration(
 
   try {
     const config = loadConfig();
-    const engine = WorkflowEngine.createConfiguredEngine(config);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, process.cwd());
 
     // Create collaborate workflow
     const workflow = WorkflowEngine.createCollaborateWorkflow();
@@ -139,7 +139,7 @@ export async function executeCollaboration(
     };
 
     spinner.text = 'Claude is planning...';
-    const result = await engine.execute(workflow, context);
+    const result = await runtime.executeWorkflow(workflow, context);
 
     if (result.success) {
       spinner.succeed(chalk.green('Collaboration completed'));

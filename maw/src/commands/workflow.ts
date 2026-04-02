@@ -10,6 +10,7 @@ import { WorkflowEngine, WorkflowContext } from '../core/workflow-engine.js';
 import { loadConfig } from '../config/loader.js';
 import { estimateTaskDifficulty } from '../core/semantic-router.js';
 import { composeWorkflow } from '../core/workflow-composer.js';
+import { MAWRuntime } from '../runtime/maw-runtime.js';
 
 /**
  * Execute Level 1: lite workflow
@@ -19,7 +20,7 @@ export async function executeLiteWorkflow(task: string, options: { cd?: string }
 
   try {
     const config = loadConfig();
-    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, options.cd);
 
     const workflow = WorkflowEngine.createLiteWorkflow();
     const context: WorkflowContext = {
@@ -27,7 +28,7 @@ export async function executeLiteWorkflow(task: string, options: { cd?: string }
       task,
     };
 
-    const result = await engine.execute(workflow, context);
+    const result = await runtime.executeWorkflow(workflow, context);
 
     if (result.success) {
       spinner.succeed(chalk.green('Lite workflow completed'));
@@ -53,7 +54,7 @@ export async function executePlanWorkflow(
 
   try {
     const config = loadConfig();
-    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, options.cd);
 
     // Create appropriate workflow
     let workflow;
@@ -74,7 +75,7 @@ export async function executePlanWorkflow(
     };
 
     spinner.text = 'Planning...';
-    const result = await engine.execute(workflow, context);
+    const result = await runtime.executeWorkflow(workflow, context);
 
     if (result.success) {
       spinner.succeed(chalk.green(`${options.level} workflow completed`));
@@ -108,7 +109,7 @@ export async function executeBrainstorm(
 
   try {
     const config = loadConfig();
-    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, options.cd);
 
     const workflow = WorkflowEngine.createBrainstormWorkflow(options.parallel);
     const context: WorkflowContext = {
@@ -120,7 +121,7 @@ export async function executeBrainstorm(
       ? 'Running parallel brainstorm with Codex and Gemini...'
       : 'Running sequential brainstorm...';
 
-    const result = await engine.execute(workflow, context);
+    const result = await runtime.executeWorkflow(workflow, context);
 
     if (result.success) {
       spinner.succeed(chalk.green('Brainstorm completed'));
@@ -160,14 +161,14 @@ export async function executeSelfMoA(
 
   try {
     const config = loadConfig();
-    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, options.cd);
     const workflow = WorkflowEngine.createSelfMoAWorkflow(task);
     const context: WorkflowContext = {
       projectRoot: options.cd || process.cwd(),
       task,
     };
 
-    const result = await engine.execute(workflow, context);
+    const result = await runtime.executeWorkflow(workflow, context);
 
     if (result.success) {
       spinner.succeed(chalk.green('Self-MoA completed'));
@@ -216,7 +217,7 @@ export async function executeAutoWorkflow(
 
   try {
     const config = loadConfig();
-    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, options.cd);
     const workflow = composeWorkflow(task);
     const context: WorkflowContext = {
       projectRoot: options.cd || process.cwd(),
@@ -227,7 +228,7 @@ export async function executeAutoWorkflow(
       console.log(chalk.dim(`  Composed: ${workflow.phases.length} phases from ${workflow.description}`));
     }
 
-    const result = await engine.execute(workflow, context);
+    const result = await runtime.executeWorkflow(workflow, context);
 
     if (result.success) {
       spinner.succeed(chalk.green(`Auto workflow completed (${estimate.difficulty})`));
@@ -268,7 +269,7 @@ export async function executeFivePhase(
 
   try {
     const config = loadConfig();
-    const engine = WorkflowEngine.createConfiguredEngine(config, options.cd);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, options.cd);
 
     const workflow = WorkflowEngine.createFivePhaseWorkflow(task);
 
@@ -296,7 +297,7 @@ export async function executeFivePhase(
     ];
 
     spinner.text = `Phase 1/5: ${phases[0].icon} ${phases[0].name}...`;
-    const result = await engine.execute(workflow, context);
+    const result = await runtime.executeWorkflow(workflow, context);
 
     if (result.success) {
       spinner.succeed(chalk.green('5-Phase workflow completed successfully'));

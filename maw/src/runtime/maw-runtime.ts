@@ -6,17 +6,29 @@ import {
   type SessionManagerOptions,
   type UnifiedSession,
 } from '../core/session-manager.js';
+import { SkillRegistry } from '../core/skill-registry.js';
+import {
+  WorkflowEngine,
+  type WorkflowContext,
+  type WorkflowDefinition,
+  type WorkflowResult,
+} from '../core/workflow-engine.js';
 import {
   ProviderRegistry,
   createConfiguredProviderRegistry,
 } from '../providers/provider-registry.js';
-import type { DelegateRunRequest, DelegateRunResult } from './run-types.js';
+import type {
+  DelegateRunRequest,
+  DelegateRunResult,
+  WorkflowRunRequest,
+} from './run-types.js';
 
 export class MAWRuntime {
   constructor(
     private readonly sessionManager: SessionManager,
     private readonly projectRoot: string = process.cwd(),
     private readonly providerRegistry: ProviderRegistry = new ProviderRegistry(),
+    private readonly skillRegistry: SkillRegistry = new SkillRegistry(projectRoot),
   ) {}
 
   static createConfiguredRuntime(
@@ -28,6 +40,7 @@ export class MAWRuntime {
       new SessionManager(projectRoot, sessionOptions),
       projectRoot,
       createConfiguredProviderRegistry(config),
+      new SkillRegistry(projectRoot),
     );
   }
 
@@ -94,6 +107,27 @@ export class MAWRuntime {
       session,
       execution,
     };
+  }
+
+  async executeWorkflow(
+    workflow: WorkflowDefinition,
+    context: WorkflowContext,
+  ): Promise<WorkflowResult> {
+    const engine = this.createWorkflowEngine(context.projectRoot || this.projectRoot);
+    return engine.execute(workflow, context);
+  }
+
+  async runWorkflow(request: WorkflowRunRequest): Promise<WorkflowResult> {
+    return this.executeWorkflow(request.workflow, request.context);
+  }
+
+  private createWorkflowEngine(projectRoot: string): WorkflowEngine {
+    return new WorkflowEngine(
+      projectRoot,
+      this.sessionManager,
+      this.skillRegistry,
+      this.providerRegistry,
+    );
   }
 
   private isLinkedSessionProvider(provider: string): provider is keyof UnifiedSession['aiSessions'] {

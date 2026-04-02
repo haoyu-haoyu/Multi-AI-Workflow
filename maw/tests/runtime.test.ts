@@ -14,6 +14,7 @@ import { SessionManager } from '../src/core/session-manager.js';
 import { MAWRuntime } from '../src/runtime/maw-runtime.js';
 import { MemorySessionStore } from '../src/storage/memory-session-store.js';
 import { StaticSessionPathProvider } from '../src/storage/path-provider.js';
+import { WorkflowEngine } from '../src/core/workflow-engine.js';
 
 class FakeCodexAdapter extends BaseAIAdapter {
   readonly name = 'codex';
@@ -26,6 +27,46 @@ class FakeCodexAdapter extends BaseAIAdapter {
       content: `handled:${options.prompt}`,
       metadata: {
         model: 'fake-codex',
+        executionTime: 1,
+        aiType: this.name,
+      },
+    };
+  }
+
+  async *stream(
+    options: AIExecutionOptions,
+  ): AsyncGenerator<StreamChunk, AIExecutionResult, unknown> {
+    const result = await this.execute(options);
+    yield {
+      type: 'content',
+      content: result.content,
+    };
+    return result;
+  }
+
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+class FakeNamedAdapter extends BaseAIAdapter {
+  readonly supportedFeatures: AIFeature[] = ['multi-turn'];
+
+  constructor(name: string) {
+    super({ name, enabled: true });
+  }
+
+  get name(): string {
+    return this.config.name;
+  }
+
+  async execute(options: AIExecutionOptions): Promise<AIExecutionResult> {
+    return {
+      success: true,
+      sessionId: `${this.name}-session-1`,
+      content: `handled:${options.prompt}`,
+      metadata: {
+        model: this.name,
         executionTime: 1,
         aiType: this.name,
       },
@@ -86,5 +127,46 @@ describe('MAWRuntime', () => {
     assert.strictEqual(result.session.sharedContext.taskHistory[0]?.assignedAI, 'codex');
 
     sessionManager.dispose();
+  });
+
+  it('executes workflows through the runtime using the shared provider registry', async () => {
+    const testRoot = join(tmpdir(), `maw-runtime-workflow-${Date.now()}`);
+    const originalHome = process.env.HOME;
+    const sessionManager = new SessionManager(testRoot, {
+      registerExitHook: false,
+      pathProvider: new StaticSessionPathProvider({
+        projectRoot: testRoot,
+        projectSessionsPath: join(testRoot, '.maw', 'sessions.json'),
+        globalSessionsPath: join(testRoot, '.global', 'sessions.json'),
+        eventsDir: join(testRoot, '.events'),
+        workflowDir: join(testRoot, '.workflow'),
+        taskDir: join(testRoot, '.task'),
+      }),
+      sessionStore: new MemorySessionStore(),
+      eventSink: new NoopEventSink(),
+    });
+
+    const runtime = new MAWRuntime(sessionManager, testRoot);
+    runtime.registerAdapter(new FakeNamedAdapter('claude'));
+
+    try {
+      process.env.HOME = testRoot;
+
+      const result = await runtime.executeWorkflow(WorkflowEngine.createLiteWorkflow(), {
+        projectRoot: testRoot,
+        task: 'plan a refactor',
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.tasks.length, 1);
+      assert.strictEqual(result.tasks[0]?.assignedAI, 'claude');
+    } finally {
+      if (originalHome) {
+        process.env.HOME = originalHome;
+      } else {
+        delete process.env.HOME;
+      }
+      sessionManager.dispose();
+    }
   });
 });
