@@ -1,6 +1,6 @@
 import type { SkillRuntime, SkillSecurityConfig } from '../core/skill-registry.js';
 
-export type CapabilitySource = 'skill';
+export type CapabilitySource = 'skill' | 'builtin';
 
 export interface CapabilityDescriptor {
   id: string;
@@ -8,6 +8,7 @@ export interface CapabilityDescriptor {
   description: string;
   source: CapabilitySource;
   provider?: string;
+  preferredProviders?: string[];
   runtime: SkillRuntime;
   entryPoint: string;
   security: SkillSecurityConfig;

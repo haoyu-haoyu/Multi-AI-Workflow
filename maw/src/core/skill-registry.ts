@@ -391,6 +391,11 @@ export class SkillRegistry {
         description: capability.description || skill.description,
         source: 'skill',
         provider: capability.provider || skill.bridge?.targetAI,
+        preferredProviders: capability.provider
+          ? [capability.provider]
+          : skill.bridge?.targetAI
+            ? [skill.bridge.targetAI]
+            : [],
         runtime: skill.runtime.language,
         entryPoint: capability.entryPoint || skill.runtime.entryPoint,
         security: skill.security,
@@ -407,6 +412,7 @@ export class SkillRegistry {
         description: skill.description,
         source: 'skill',
         provider: skill.bridge?.targetAI,
+        preferredProviders: skill.bridge?.targetAI ? [skill.bridge.targetAI] : [],
         runtime: skill.runtime.language,
         entryPoint: skill.runtime.entryPoint,
         security: skill.security,

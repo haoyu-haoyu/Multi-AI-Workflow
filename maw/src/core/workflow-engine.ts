@@ -17,6 +17,12 @@ import {
   ProviderRegistry,
   createConfiguredProviderRegistry,
 } from '../providers/provider-registry.js';
+import { CapabilityRegistry } from '../capabilities/capability-registry.js';
+import { getBuiltinCapabilities } from '../capabilities/builtin-capabilities.js';
+import {
+  resolvePhaseExecution,
+  type ResolvedPhaseExecution,
+} from '../capabilities/capability-resolver.js';
 import type { CapabilityDescriptor } from '../capabilities/capability-types.js';
 
 export type PhaseType = 'planning' | 'execution' | 'review' | 'delegation';
@@ -29,6 +35,12 @@ export interface WorkflowPhase {
   name: string;
   /** Phase type */
   type: PhaseType;
+  /** Capability required for the phase */
+  capabilityId?: string;
+  /** Preferred providers for this capability */
+  preferredProviders?: string[];
+  /** Fallback providers if preferred providers are unavailable */
+  fallbackProviders?: string[];
   /** Assigned AI for this phase */
   assignedAI?: AIRole;
   /** Input requirements */
@@ -162,6 +174,7 @@ export class WorkflowEngine {
   private readonly sessionManager: SessionManager;
   private readonly skillRegistry: SkillRegistry;
   private readonly providerRegistry: ProviderRegistry;
+  private readonly capabilityRegistry: CapabilityRegistry;
   private readonly projectRoot: string;
   private readonly taskDir: string;
 
@@ -176,8 +189,10 @@ export class WorkflowEngine {
     this.sessionManager = sessionManager || new SessionManager(projectRoot);
     this.skillRegistry = skillRegistry || new SkillRegistry(projectRoot);
     this.providerRegistry = providerRegistry || new ProviderRegistry();
+    this.capabilityRegistry = new CapabilityRegistry();
 
     this.ensureDirectories();
+    this.refreshCapabilityRegistry();
   }
 
   private ensureDirectories(): void {
@@ -218,7 +233,13 @@ export class WorkflowEngine {
    * List capabilities projected from installed skills.
    */
   listCapabilities(): CapabilityDescriptor[] {
-    return this.skillRegistry.listCapabilities();
+    return this.capabilityRegistry.list();
+  }
+
+  private refreshCapabilityRegistry(): void {
+    this.capabilityRegistry.clear();
+    this.capabilityRegistry.registerMany(getBuiltinCapabilities());
+    this.capabilityRegistry.registerMany(this.skillRegistry.listCapabilities());
   }
 
   /**
@@ -397,18 +418,19 @@ export class WorkflowEngine {
     phaseOutputs: PhaseOutputs = {}
   ): Promise<PhaseResult> {
     try {
+      const resolved = this.resolvePhaseExecution(phase);
       switch (phase.type) {
         case 'planning':
-          return this.executePlanningPhase(phase, session, context, phaseOutputs);
+          return this.executePlanningPhase(phase, resolved, session, context, phaseOutputs);
 
         case 'execution':
-          return this.executeExecutionPhase(phase, session, context, phaseOutputs);
+          return this.executeExecutionPhase(phase, resolved, session, context, phaseOutputs);
 
         case 'delegation':
-          return this.executeDelegationPhase(phase, session, context, phaseOutputs);
+          return this.executeDelegationPhase(phase, resolved, session, context, phaseOutputs);
 
         case 'review':
-          return this.executeReviewPhase(phase, session, context, phaseOutputs);
+          return this.executeReviewPhase(phase, resolved, session, context, phaseOutputs);
 
         default:
           return WorkflowEngine.EMPTY_RESULT;
@@ -427,21 +449,18 @@ export class WorkflowEngine {
    */
   private async executePlanningPhase(
     phase: WorkflowPhase,
+    resolved: ResolvedPhaseExecution,
     session: UnifiedSession,
     context: WorkflowContext,
     phaseOutputs: PhaseOutputs = {}
   ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
-    const adapter = this.getAdapter(phase.assignedAI || 'claude');
-
-    if (!adapter) {
-      return { success: false, tasks, error: 'No adapter available for planning' };
-    }
+    const adapter = resolved.provider;
 
     const taskRecord: TaskRecord = {
       id: uuidv4(),
       description: `Planning: ${context.task}`,
-      assignedAI: adapter.name,
+      assignedAI: resolved.providerName,
       status: 'in_progress',
       timestamp: new Date(),
     };
@@ -452,7 +471,7 @@ export class WorkflowEngine {
         prompt: this.buildPlanningPrompt(context, phaseOutputs, phase),
         workingDir: context.projectRoot,
         sandbox: 'read-only',
-        sessionId: session.aiSessions[adapter.name as keyof typeof session.aiSessions],
+        sessionId: session.aiSessions[resolved.providerName as keyof typeof session.aiSessions],
       });
 
       if (result.success) {
@@ -468,10 +487,10 @@ export class WorkflowEngine {
         }, null, 2));
 
         // Link session ID if returned
-        if (result.sessionId && this.isLinkedSessionProvider(adapter.name)) {
+        if (result.sessionId && this.isLinkedSessionProvider(resolved.providerName)) {
           await this.sessionManager.linkExternalSession(
             session,
-            adapter.name,
+            resolved.providerName,
             result.sessionId
           );
         }
@@ -497,17 +516,14 @@ export class WorkflowEngine {
    */
   private async executeDelegationPhase(
     phase: WorkflowPhase,
+    resolved: ResolvedPhaseExecution,
     session: UnifiedSession,
     context: WorkflowContext,
     phaseOutputs: PhaseOutputs = {}
   ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
-    const assignedAI = phase.assignedAI || 'codex';
-    const adapter = this.getAdapter(assignedAI);
-
-    if (!adapter) {
-      return { success: false, tasks, error: `No adapter for ${assignedAI}` };
-    }
+    const assignedAI = resolved.providerName;
+    const adapter = resolved.provider;
 
     const taskRecord: TaskRecord = {
       id: uuidv4(),
@@ -566,12 +582,13 @@ export class WorkflowEngine {
    */
   private async executeExecutionPhase(
     phase: WorkflowPhase,
+    resolved: ResolvedPhaseExecution,
     session: UnifiedSession,
     context: WorkflowContext,
     phaseOutputs: PhaseOutputs = {}
   ): Promise<PhaseResult> {
     // Similar to delegation but with potential write access
-    return this.executeDelegationPhase(phase, session, context, phaseOutputs);
+    return this.executeDelegationPhase(phase, resolved, session, context, phaseOutputs);
   }
 
   /**
@@ -579,21 +596,18 @@ export class WorkflowEngine {
    */
   private async executeReviewPhase(
     phase: WorkflowPhase,
+    resolved: ResolvedPhaseExecution,
     session: UnifiedSession,
     context: WorkflowContext,
     phaseOutputs: PhaseOutputs = {}
   ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
-    const adapter = this.getAdapter(phase.assignedAI || 'claude');
-
-    if (!adapter) {
-      return { success: true, tasks }; // Review is optional
-    }
+    const adapter = resolved.provider;
 
     const taskRecord: TaskRecord = {
       id: uuidv4(),
       description: `Review: ${context.task}`,
-      assignedAI: adapter.name,
+      assignedAI: resolved.providerName,
       status: 'in_progress',
       timestamp: new Date(),
     };
@@ -613,6 +627,10 @@ export class WorkflowEngine {
     }
 
     return { success: true, tasks, content: taskRecord.result };
+  }
+
+  private resolvePhaseExecution(phase: WorkflowPhase): ResolvedPhaseExecution {
+    return resolvePhaseExecution(phase, this.providerRegistry, this.capabilityRegistry);
   }
 
   /**
