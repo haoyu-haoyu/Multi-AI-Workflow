@@ -7,11 +7,11 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { WorkflowEngine, WorkflowContext } from '../core/workflow-engine.js';
-import { SessionManager } from '../core/session-manager.js';
-import { ClaudeAdapter, CodexAdapter, GeminiAdapter, SandboxLevel } from '../adapters/base-adapter.js';
+import { SandboxLevel } from '../adapters/base-adapter.js';
 import { loadConfig } from '../config/loader.js';
 import { analyzeTaskForRouting, AI_PROFILES, estimateTaskDifficulty, buildCascadePlan } from '../core/semantic-router.js';
 import { getExecutionLogger } from '../core/execution-logger.js';
+import { MAWRuntime } from '../runtime/maw-runtime.js';
 
 interface DelegateOptions {
   sandbox: string;
@@ -44,80 +44,37 @@ export async function delegateToAI(
 
   try {
     const config = loadConfig();
-    const sessionManager = new SessionManager(options.cd);
+    const runtime = MAWRuntime.createConfiguredRuntime(config, options.cd);
 
-    // Get or create session
-    let session;
-    if (options.session) {
-      session = await sessionManager.resumeSession(options.session);
-      spinner.text = `Resuming session ${options.session.substring(0, 8)}...`;
-    } else {
-      session = await sessionManager.createSession({
-        name: `delegate-${ai}-${Date.now()}`,
-        workflowLevel: 'delegate',
-        projectRoot: options.cd,
-      });
-    }
-
-    // Get appropriate adapter
-    let adapter;
-    switch (ai.toLowerCase()) {
-      case 'claude':
-        adapter = new ClaudeAdapter({
-          name: 'claude',
-          enabled: true,
-        });
-        break;
-      case 'codex':
-        adapter = new CodexAdapter({
-          name: 'codex',
-          enabled: true,
-          cliPath: config.ai.codex.cliPath,
-        });
-        break;
-      case 'gemini':
-        adapter = new GeminiAdapter({
-          name: 'gemini',
-          enabled: true,
-          cliPath: config.ai.gemini.cliPath,
-        });
-        break;
-      default:
-        spinner.fail(chalk.red(`Unknown AI: ${ai}`));
-        console.log(chalk.dim('Available: claude, codex, gemini'));
-        return;
-    }
-
-    // Check if adapter is available
-    const isAvailable = await adapter.isAvailable();
-    if (!isAvailable) {
-      spinner.fail(chalk.red(`${ai} CLI is not available`));
-      console.log(chalk.dim(`Make sure ${ai} CLI is installed and in your PATH`));
+    if (!runtime.hasProvider(ai)) {
+      spinner.fail(chalk.red(`Unknown AI: ${ai}`));
+      console.log(chalk.dim(`Available: ${runtime.listProviders().join(', ')}`));
       return;
     }
 
     spinner.text = `${ai} is processing...`;
 
-    // Execute delegation
-    const result = await adapter.execute({
-      prompt: task,
-      workingDir: options.cd,
-      sandbox: options.sandbox as SandboxLevel,
-      sessionId: session.aiSessions[ai as keyof typeof session.aiSessions],
+    const { session, execution } = await runtime.delegate({
+      provider: ai,
+      task,
+      projectRoot: options.cd,
+      sessionId: options.session,
       stream: options.stream,
+      policy: {
+        sandbox: options.sandbox as SandboxLevel,
+        allowNetwork: false,
+        writableRoots: [options.cd],
+        trustLevel: 'interactive',
+        requiresApprovalFor: [],
+      },
     });
 
-    if (result.success) {
+    if (execution.success) {
       spinner.succeed(chalk.green(`${ai} completed`));
 
       // Save SESSION_ID for future use
-      if (result.sessionId) {
-        await sessionManager.linkExternalSession(
-          session,
-          ai as 'codex' | 'gemini',
-          result.sessionId
-        );
-        console.log(chalk.dim('\nSESSION_ID:'), result.sessionId);
+      if (execution.sessionId) {
+        console.log(chalk.dim('\nSESSION_ID:'), execution.sessionId);
       }
 
       console.log(chalk.dim('MAW Session:'), session.mawSessionId);
@@ -125,12 +82,12 @@ export async function delegateToAI(
 
       // Display result
       console.log(chalk.cyan('\n--- Response ---\n'));
-      console.log(result.content);
+      console.log(execution.content);
 
       // Show artifacts if any
-      if (result.artifacts && result.artifacts.length > 0) {
+      if (execution.artifacts && execution.artifacts.length > 0) {
         console.log(chalk.cyan('\n--- Artifacts ---'));
-        for (const artifact of result.artifacts) {
+        for (const artifact of execution.artifacts) {
           console.log(chalk.dim(`\n[${artifact.type}] ${artifact.language || ''}`));
           console.log(artifact.content.substring(0, 500));
           if (artifact.content.length > 500) {
@@ -140,7 +97,7 @@ export async function delegateToAI(
       }
     } else {
       spinner.fail(chalk.red(`${ai} failed`));
-      console.error(chalk.red(result.error));
+      console.error(chalk.red(execution.error));
     }
   } catch (error) {
     spinner.fail(chalk.red('Delegation error'));
@@ -280,39 +237,9 @@ export async function semanticRoute(
 
   console.log();
 
-  // Execute with selected AI
-  if (selectedAI === 'claude') {
-    // Use Claude CLI for real execution
-    const spinner = ora('Claude is processing...').start();
-    try {
-      const config = loadConfig();
-      const adapter = new ClaudeAdapter({
-        name: 'claude',
-        enabled: true,
-      });
-      const result = await adapter.execute({
-        prompt: task,
-        workingDir: options.cd,
-        sandbox: 'read-only',
-      });
-      if (result.success) {
-        spinner.succeed(chalk.green('Claude completed'));
-        console.log(chalk.cyan('\n--- Response ---'));
-        console.log(result.content);
-      } else {
-        spinner.fail(chalk.red('Claude failed'));
-        console.error(result.error || 'Unknown error');
-      }
-    } catch (error) {
-      spinner.fail(chalk.red('Claude execution failed'));
-      console.error(error instanceof Error ? error.message : 'Unknown error');
-    }
-  } else {
-    // Delegate to external AI (Codex/Gemini)
-    await delegateToAI(selectedAI, task, {
-      sandbox: options.sandbox,
-      cd: options.cd,
-      stream: false,
-    });
-  }
+  await delegateToAI(selectedAI, task, {
+    sandbox: options.sandbox,
+    cd: options.cd,
+    stream: false,
+  });
 }

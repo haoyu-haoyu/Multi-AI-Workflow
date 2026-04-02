@@ -6,9 +6,13 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { FileEventSink } from '../events/file-event-sink.js';
+import type { EventSink } from '../events/event-sink.js';
+import { DefaultSessionPathProvider, type SessionPathProvider } from '../storage/path-provider.js';
+import { FileSessionStore } from '../storage/file-session-store.js';
+import type { SessionStore } from '../storage/session-store.js';
 
 export type SessionStatus = 'active' | 'paused' | 'completed' | 'archived';
 export type WorkflowLevel = 'lite' | 'lite-plan' | 'plan' | 'tdd-plan' | 'brainstorm' | 'delegate' | 'collaborate' | 'ralph';
@@ -85,85 +89,123 @@ export interface SessionCreateOptions {
   tags?: string[];
 }
 
+export interface GlobalSessionRef {
+  name: string;
+  projectRoot: string;
+  status: SessionStatus;
+  updatedAt: Date;
+}
+
+export interface SessionManagerOptions {
+  pathProvider?: SessionPathProvider;
+  sessionStore?: SessionStore<UnifiedSession, GlobalSessionRef>;
+  eventSink?: EventSink<SessionEvent>;
+  registerExitHook?: boolean;
+}
+
 /**
  * Session Manager - Handles unified session lifecycle
  */
 export class SessionManager {
   private sessions: Map<string, UnifiedSession> = new Map();
-  private persistPath: string;
-  private globalPersistPath: string;
-  private eventsDir: string;
-  private workflowDir: string;
-  private taskDir: string;
+  private readonly pathProvider: SessionPathProvider;
+  private readonly sessionStore: SessionStore<UnifiedSession, GlobalSessionRef>;
+  private readonly eventSink: EventSink<SessionEvent>;
+  private readonly workflowDir: string;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly exitHandler: () => void;
+  private readonly registerExitHook: boolean;
   private static readonly SAVE_DEBOUNCE_MS = 500;
   private static readonly MAX_LOADED_SESSIONS = 100;
   private static readonly MAX_SESSION_AGE_DAYS = 30;
 
-  private atomicWriteFileSync(filePath: string, data: string): void {
-    const tmpPath = filePath + '.tmp';
-    writeFileSync(tmpPath, data);
-    renameSync(tmpPath, filePath);
+  static async create(
+    projectRoot: string = process.cwd(),
+    options: SessionManagerOptions = {},
+  ): Promise<SessionManager> {
+    return new SessionManager(projectRoot, options);
   }
 
-  static async create(projectRoot: string = process.cwd()): Promise<SessionManager> {
-    return new SessionManager(projectRoot);
-  }
-
-  constructor(projectRoot: string = process.cwd()) {
-    this.persistPath = join(projectRoot, '.maw', 'sessions.json');
-    this.globalPersistPath = join(homedir(), '.maw', 'sessions.json');
-    this.eventsDir = join(homedir(), '.maw', 'events');
-    this.workflowDir = join(projectRoot, '.workflow');
-    this.taskDir = join(projectRoot, '.task');
+  constructor(projectRoot: string = process.cwd(), options: SessionManagerOptions = {}) {
+    this.pathProvider = options.pathProvider || new DefaultSessionPathProvider(projectRoot);
+    this.sessionStore =
+      options.sessionStore || new FileSessionStore<UnifiedSession, GlobalSessionRef>(this.pathProvider);
+    this.eventSink = options.eventSink || new FileEventSink<SessionEvent>(this.pathProvider);
+    this.workflowDir = this.pathProvider.getPaths().workflowDir;
+    this.registerExitHook = options.registerExitHook ?? true;
+    this.exitHandler = () => this.flushSessions();
 
     this.ensureDirectories();
     this.loadSessions();
-    process.on('exit', () => this.flushSessions());
+    if (this.registerExitHook) {
+      process.on('exit', this.exitHandler);
+    }
   }
 
   private ensureDirectories(): void {
-    const mawDir = join(this.persistPath, '..');
-    if (!existsSync(mawDir)) {
-      mkdirSync(mawDir, { recursive: true });
-    }
-    const globalMawDir = join(this.globalPersistPath, '..');
-    if (!existsSync(globalMawDir)) {
-      mkdirSync(globalMawDir, { recursive: true });
-    }
-    if (!existsSync(this.eventsDir)) {
-      mkdirSync(this.eventsDir, { recursive: true });
-    }
+    this.pathProvider.ensureDirectories();
+    this.sessionStore.ensureReady();
+    this.eventSink.ensureReady();
     if (!existsSync(this.workflowDir)) {
       mkdirSync(this.workflowDir, { recursive: true });
-    }
-    if (!existsSync(this.taskDir)) {
-      mkdirSync(this.taskDir, { recursive: true });
     }
   }
 
   private loadSessions(): void {
-    const pathsToTry = [this.persistPath, this.globalPersistPath];
     const cutoff = Date.now() - SessionManager.MAX_SESSION_AGE_DAYS * 24 * 60 * 60 * 1000;
 
-    for (const path of pathsToTry) {
-      if (existsSync(path)) {
-        try {
-          const data = JSON.parse(readFileSync(path, 'utf-8'));
-          for (const [id, session] of Object.entries(data)) {
-            const s = session as UnifiedSession;
-            const updatedAt = new Date(s.metadata.updatedAt).getTime();
-            if (updatedAt >= cutoff) {
-              this.sessions.set(id, s);
-            }
-          }
-        } catch {
-          console.warn('[SessionManager] Warning: Failed to parse sessions from ' + path + '. Starting fresh.');
-        }
+    for (const [id, session] of Object.entries(this.sessionStore.loadProjectSessions())) {
+      const normalized = this.normalizeSession(session);
+      if (!normalized) {
+        continue;
+      }
+
+      const updatedAt = normalized.metadata.updatedAt.getTime();
+      if (updatedAt >= cutoff) {
+        this.sessions.set(id, normalized);
       }
     }
 
     this.evictIfOverLimit();
+  }
+
+  private normalizeSession(session: UnifiedSession | undefined): UnifiedSession | null {
+    if (!session || !session.mawSessionId || !session.metadata || !session.sharedContext) {
+      return null;
+    }
+
+    const createdAt = new Date(session.metadata.createdAt);
+    const updatedAt = new Date(session.metadata.updatedAt);
+    if (Number.isNaN(createdAt.getTime()) || Number.isNaN(updatedAt.getTime())) {
+      return null;
+    }
+
+    return {
+      mawSessionId: session.mawSessionId,
+      name: session.name,
+      aiSessions: session.aiSessions || {},
+      workflowSession: session.workflowSession
+        ? {
+            wfsPath: session.workflowSession.wfsPath,
+            taskFiles: session.workflowSession.taskFiles || [],
+            level: session.workflowSession.level,
+          }
+        : undefined,
+      metadata: {
+        createdAt,
+        updatedAt,
+        status: session.metadata.status,
+        tags: session.metadata.tags || [],
+      },
+      sharedContext: {
+        projectRoot: session.sharedContext.projectRoot || process.cwd(),
+        relevantFiles: session.sharedContext.relevantFiles || [],
+        taskHistory: (session.sharedContext.taskHistory || []).map((task) => ({
+          ...task,
+          timestamp: new Date(task.timestamp),
+        })),
+      },
+    };
   }
 
   private evictIfOverLimit(): void {
@@ -192,11 +234,10 @@ export class SessionManager {
     for (const [id, session] of this.sessions) {
       data[id] = session;
     }
-    const jsonData = JSON.stringify(data, null, 2);
-    this.atomicWriteFileSync(this.persistPath, jsonData);
+    this.sessionStore.saveProjectSessions(data);
 
     // Write only lightweight refs to global file (prevents cross-project leaking)
-    const globalData: Record<string, { name: string; projectRoot: string; status: string; updatedAt: Date }> = {};
+    const globalData: Record<string, GlobalSessionRef> = {};
     for (const [id, session] of this.sessions) {
       globalData[id] = {
         name: session.name,
@@ -205,7 +246,7 @@ export class SessionManager {
         updatedAt: session.metadata.updatedAt,
       };
     }
-    this.atomicWriteFileSync(this.globalPersistPath, JSON.stringify(globalData, null, 2));
+    this.sessionStore.saveGlobalSessions(globalData);
   }
 
   /**
@@ -215,16 +256,25 @@ export class SessionManager {
    */
   private emitEvent(type: SessionEvent['type'], sessionId: string, data: Record<string, unknown> = {}): void {
     try {
-      const event: SessionEvent = {
+      this.eventSink.emit({
         type,
         timestamp: new Date().toISOString(),
         sessionId,
         data,
-      };
-      const filename = `${Date.now()}-${type.replace(/\./g, '-')}.json`;
-      this.atomicWriteFileSync(join(this.eventsDir, filename), JSON.stringify(event));
+      });
     } catch {
       // Event emission is best-effort — don't break the CLI if events dir is unavailable
+    }
+  }
+
+  dispose(): void {
+    if (this.saveTimer !== null) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+
+    if (this.registerExitHook) {
+      process.off('exit', this.exitHandler);
     }
   }
 
