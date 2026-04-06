@@ -18,7 +18,7 @@
  * - Verify: self-check output quality before proceeding
  */
 
-import { WorkflowDefinition, WorkflowPhase } from './workflow-engine.js';
+import { AIRole, WorkflowDefinition, WorkflowPhase } from './workflow-engine.js';
 import { estimateTaskDifficulty, analyzeTaskForRouting, buildCascadePlan, type TaskDifficulty } from './semantic-router.js';
 import type { WorkflowLevel } from './session-manager.js';
 
@@ -33,7 +33,7 @@ export interface WorkflowOperator {
   name: string;
   description: string;
   /** Which AI(s) to use */
-  ai: string | string[];
+  ai: AIRole | AIRole[];
   /** Cost weight (1=cheap, 5=expensive) */
   costWeight: number;
   /** Quality weight (1=low, 5=high) */
@@ -196,7 +196,7 @@ export function composeWorkflow(task: string): WorkflowDefinition {
           id: subId,
           name: `${op.name} (${ai})`,
           type: 'delegation',
-          assignedAI: ai as any,
+          assignedAI: ai,
           inputs: [...previousOutputs],
           outputs: [`${subId}-output`],
         });
@@ -226,7 +226,7 @@ export function composeWorkflow(task: string): WorkflowDefinition {
         id: phaseId,
         name: op.name,
         type: phaseType,
-        assignedAI: assignedAI as any,
+        assignedAI,
         inputs: [...previousOutputs],
         outputs,
         config: op.type === 'verify' ? {

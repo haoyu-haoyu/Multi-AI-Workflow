@@ -5,7 +5,7 @@
  */
 
 import chalk from 'chalk';
-import { SessionManager } from '../core/session-manager.js';
+import { SessionManager, type WorkflowLevel } from '../core/session-manager.js';
 
 /**
  * List all sessions
@@ -67,7 +67,7 @@ export async function createSession(
   try {
     const session = await sessionManager.createSession({
       name,
-      workflowLevel: options.level as any,
+      workflowLevel: options.level as WorkflowLevel,
       projectRoot: process.cwd(),
     });
 

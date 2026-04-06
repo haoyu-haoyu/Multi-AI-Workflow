@@ -68,6 +68,13 @@ export async function executeRalphLoop(
     history: [],
   };
 
+  // Validate AI provider
+  const validAIs = ['claude', 'codex', 'gemini', 'auto'];
+  if (!validAIs.includes(options.ai)) {
+    spinner.fail(chalk.red(`Invalid AI provider: "${options.ai}". Must be one of: ${validAIs.join(', ')}`));
+    return;
+  }
+
   const config = loadConfig();
   const sessionManager = new SessionManager(options.cd);
 
