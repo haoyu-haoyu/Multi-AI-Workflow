@@ -18,13 +18,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: maw/package-lock.json
-      - run: cd maw && npm ci
+      - run: cd maw && npm install
       - run: cd maw && npm run build
       - run: cd maw && npm test
 
-  test-dashboard:
+  typecheck:
+    name: TypeScript Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cd maw && npm install
+      - run: cd maw && npx tsc --noEmit
+
+  dashboard-build:
     name: Dashboard Build
     runs-on: ubuntu-latest
     steps:
@@ -32,12 +41,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-      - run: cd dashboard && npm ci
+      - run: cd dashboard && npm install
       - run: cd dashboard && npm run build
 
-  test-bridges:
+  bridges:
     name: Python Bridges
     runs-on: ubuntu-latest
     steps:
@@ -46,17 +53,11 @@ jobs:
         with:
           python-version: "3.11"
       - run: cd bridges && pip install -e ".[dev]"
-      - run: cd bridges && python -m pytest tests/ -v --tb=short || echo "No tests yet"
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: maw/package-lock.json
-      - run: cd maw && npm ci
-      - run: cd maw && npx tsc --noEmit
+      - name: Run bridge tests
+        run: |
+          cd bridges
+          if [ -d tests ] && [ "$(find tests -name 'test_*.py' | head -1)" ]; then
+            python -m pytest tests/ -v --tb=short
+          else
+            echo "No bridge tests found yet — skipping"
+          fi

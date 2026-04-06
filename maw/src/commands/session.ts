@@ -62,6 +62,14 @@ export async function createSession(
   name: string,
   options: { level: string }
 ): Promise<void> {
+  const validLevels: WorkflowLevel[] = [
+    'lite', 'lite-plan', 'plan', 'tdd-plan', 'brainstorm', 'delegate', 'collaborate', 'ralph',
+  ];
+  if (!validLevels.includes(options.level as WorkflowLevel)) {
+    console.error(chalk.red(`Invalid workflow level: "${options.level}". Must be one of: ${validLevels.join(', ')}`));
+    return;
+  }
+
   const sessionManager = new SessionManager();
 
   try {

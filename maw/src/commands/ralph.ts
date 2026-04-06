@@ -68,8 +68,9 @@ export async function executeRalphLoop(
     history: [],
   };
 
-  // Validate AI provider
+  // Validate and normalize AI provider
   const validAIs = ['claude', 'codex', 'gemini', 'auto'];
+  options.ai = options.ai.toLowerCase();
   if (!validAIs.includes(options.ai)) {
     spinner.fail(chalk.red(`Invalid AI provider: "${options.ai}". Must be one of: ${validAIs.join(', ')}`));
     return;
