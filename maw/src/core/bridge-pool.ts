@@ -5,6 +5,9 @@
  * the pool starts bridges in --daemon mode and communicates via stdin/stdout
  * JSON lines. Process is lazily started on first request and reused until
  * explicitly closed or the Node process exits.
+ *
+ * Security: all prompts are passed via stdin JSON, never as CLI arguments.
+ * This eliminates shell metacharacter injection (e.g. $(cmd), `cmd`, ; rm -rf /).
  */
 
 import { spawn, ChildProcess } from 'child_process';
@@ -212,5 +215,54 @@ export class BridgePool {
       bridge.close();
     }
     this.bridges.clear();
+  }
+
+  /**
+   * One-shot execution via --stdin mode (no daemon, no process reuse).
+   * Spawns a new process, pipes JSON request via stdin, reads JSON response.
+   * Use this when you only need a single call and don't want daemon overhead.
+   *
+   * This is the secure alternative to passing --PROMPT via CLI arguments.
+   */
+  static async sendOneShot(
+    ai: string,
+    request: BridgeRequest,
+    timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<BridgeResponse> {
+    const pool = new BridgePool();
+    const bridgePath = pool.resolveBridgePath(ai);
+    if (!bridgePath) {
+      throw new Error(`Bridge not found for ${ai}. Run: pip install -e bridges/`);
+    }
+
+    return new Promise<BridgeResponse>((resolve, reject) => {
+      const proc = spawn('python3', [bridgePath, '--stdin'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+
+      const timer = setTimeout(() => {
+        proc.kill('SIGTERM');
+        reject(new Error(`Bridge --stdin timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      let stdout = '';
+      proc.stdout!.on('data', (data: Buffer) => { stdout += data.toString(); });
+      proc.on('close', () => {
+        clearTimeout(timer);
+        try {
+          resolve(JSON.parse(stdout));
+        } catch {
+          reject(new Error(`Invalid JSON from bridge --stdin: ${stdout.slice(0, 300)}`));
+        }
+      });
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+
+      proc.stdin!.write(JSON.stringify(request));
+      proc.stdin!.end();
+    });
   }
 }

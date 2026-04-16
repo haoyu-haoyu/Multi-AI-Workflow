@@ -178,11 +178,37 @@ def run_daemon() -> None:
         sys.stdout.flush()
 
 
+def run_stdin() -> None:
+    """One-shot stdin mode: read a single JSON request from stdin, process, output result.
+
+    Avoids CLI argument injection by passing the prompt via stdin JSON
+    instead of as a shell argument.
+    """
+    raw = sys.stdin.read().strip()
+    if not raw:
+        print(json.dumps({"success": False, "error": "Empty stdin"}, ensure_ascii=False))
+        sys.exit(1)
+    try:
+        request = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"success": False, "error": f"Invalid JSON: {e}"}, ensure_ascii=False))
+        sys.exit(1)
+
+    result = execute_codex_request(request)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if not result.get("success"):
+        sys.exit(1)
+
+
 def main():
     configure_windows_stdio()
 
     if "--daemon" in sys.argv:
         run_daemon()
+        return
+
+    if "--stdin" in sys.argv:
+        run_stdin()
         return
 
     parser = argparse.ArgumentParser(description="Codex Bridge - Delegate tasks to Codex CLI")
