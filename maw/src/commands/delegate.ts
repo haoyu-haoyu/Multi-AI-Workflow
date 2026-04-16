@@ -9,7 +9,7 @@ import ora from 'ora';
 import { WorkflowEngine, WorkflowContext } from '../core/workflow-engine.js';
 import { SandboxLevel } from '../adapters/base-adapter.js';
 import { loadConfig } from '../config/loader.js';
-import { analyzeTaskForRouting, AI_PROFILES, estimateTaskDifficulty, buildCascadePlan } from '../core/semantic-router.js';
+import { analyzeTaskForRouting, analyzeTaskForRoutingAsync, AI_PROFILES, estimateTaskDifficulty, buildCascadePlan } from '../core/semantic-router.js';
 import { getExecutionLogger } from '../core/execution-logger.js';
 import { MAWRuntime } from '../runtime/maw-runtime.js';
 
@@ -185,8 +185,10 @@ export async function semanticRoute(
 ): Promise<void> {
   console.log(chalk.cyan('🔍 Analyzing task for optimal AI routing...\n'));
 
-  // Analyze task
-  const analysis = analyzeTaskForRouting(task);
+  // Analyze task using async router (with historical adjustment + optional LLM)
+  const analysis = await analyzeTaskForRoutingAsync(task, {
+    enableHistoricalAdjustment: true,
+  });
   const difficulty = estimateTaskDifficulty(task);
 
   // Log the routing decision

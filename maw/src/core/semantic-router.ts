@@ -1,16 +1,19 @@
 /**
- * Semantic Router v2
+ * Semantic Router v3
  *
  * Weighted keyword scoring with confidence thresholds, cost-awareness,
- * and cascading strategy. Replaces the v1 bag-of-keywords classifier.
+ * cascading strategy, historical success-rate adjustment, and optional
+ * LLM-based classification for ambiguous tasks.
  *
- * Key improvements over v1:
- * - Weighted keywords (high/medium/low specificity)
- * - Confidence threshold with fallback to Claude
- * - Cost-aware cascading: try cheaper model first, escalate if needed
- * - Category-level scoring prevents single-keyword false positives
- * - Returns ranked list instead of single pick
+ * Key improvements over v2:
+ * - Historical feedback loop: past success rates adjust keyword scores
+ * - Async LLM fallback: when keyword scoring is ambiguous, an optional
+ *   lightweight LLM call classifies the task (RouteLLM-inspired)
+ * - Backward-compatible: sync analyzeTaskForRouting unchanged
  */
+
+import { spawn } from 'child_process';
+import { getExecutionLogger } from './execution-logger.js';
 
 // ============================================
 // Types
@@ -52,6 +55,28 @@ interface AIProfile {
   /** Order in cascade chain (lower = try first) */
   cascadeOrder: number;
 }
+
+// ============================================
+// Router Configuration
+// ============================================
+
+export interface RouterConfig {
+  /** Use execution history to adjust keyword scores */
+  enableHistoricalAdjustment: boolean;
+  /** Fall back to LLM classification when keyword routing is ambiguous */
+  enableLLMFallback: boolean;
+  /** Command to invoke for LLM classification (receives JSON on stdin) */
+  llmClassifierCommand: string[];
+  /** Timeout for LLM classifier in ms */
+  llmClassifierTimeoutMs: number;
+}
+
+const DEFAULT_ROUTER_CONFIG: RouterConfig = {
+  enableHistoricalAdjustment: true,
+  enableLLMFallback: false,
+  llmClassifierCommand: ['gemini', '--prompt', '', '-o', 'stream-json', '--sandbox'],
+  llmClassifierTimeoutMs: 10_000,
+};
 
 // ============================================
 // AI Profiles with Weighted Keywords
@@ -224,6 +249,221 @@ export function analyzeTaskForRouting(task: string): RoutingResult {
   const selectedAI = isAmbiguous ? 'claude' : best.ai;
 
   // Recommend cascading when the top two AIs are close in score
+  const second = ranking[1];
+  const scoreDelta = second ? (best.score - second.score) / Math.max(best.score, 1) : 1;
+  const cascadeRecommended = scoreDelta < 0.3 && !isAmbiguous;
+
+  return {
+    ai: selectedAI,
+    confidence: isAmbiguous ? 0.5 : Math.min(confidence, 1),
+    reasons: isAmbiguous ? ['ambiguous-task'] : best.matchedKeywords,
+    ranking,
+    cascadeRecommended,
+  };
+}
+
+// ============================================
+// Historical Success-Rate Adjustment
+// ============================================
+
+/**
+ * Adjust AI scores based on historical execution success rates.
+ * AIs that have performed well on similar task categories get a boost;
+ * AIs that have failed repeatedly get penalized.
+ *
+ * Returns a new ranking with adjusted scores.
+ */
+function adjustScoresFromHistory(ranking: AIScore[]): AIScore[] {
+  let rates;
+  try {
+    rates = getExecutionLogger().getSuccessRates();
+  } catch {
+    return ranking;
+  }
+  if (rates.length === 0) return ranking;
+
+  const rateMap = new Map<string, number>();
+  for (const r of rates) {
+    if (r.attempts >= 3) {
+      const existing = rateMap.get(r.ai);
+      if (existing === undefined || r.attempts > (rates.find(x => x.ai === r.ai && x.rate === existing)?.attempts ?? 0)) {
+        rateMap.set(r.ai, r.rate);
+      }
+    }
+  }
+
+  if (rateMap.size === 0) return ranking;
+
+  const adjusted = ranking.map(entry => {
+    const historicalRate = rateMap.get(entry.ai);
+    if (historicalRate === undefined) return entry;
+    // Blend: 80% keyword score + 20% historical boost/penalty
+    // Historical multiplier ranges from 0.8 (0% success) to 1.2 (100% success)
+    const histMultiplier = 0.8 + 0.4 * historicalRate;
+    return {
+      ...entry,
+      score: entry.score * histMultiplier,
+    };
+  });
+
+  const maxScore = Math.max(...adjusted.map(s => s.score), 1);
+  for (const s of adjusted) {
+    s.normalizedScore = s.score / maxScore;
+  }
+
+  adjusted.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return AI_PROFILES[a.ai].cascadeOrder - AI_PROFILES[b.ai].cascadeOrder;
+  });
+
+  return adjusted;
+}
+
+// ============================================
+// LLM-Based Classification (async fallback)
+// ============================================
+
+const LLM_CLASSIFICATION_PROMPT = `You are an AI task router. Given a task description, classify which AI agent is best suited.
+
+Available agents:
+- codex: Backend development, algorithms, debugging, performance optimization, CLI tools, testing
+- gemini: Frontend/UI, visual analysis, CSS/HTML/React, documentation, research, accessibility
+- claude: Architecture, planning, security audits, complex multi-step reasoning, large refactors
+
+Respond with ONLY a JSON object (no markdown, no explanation):
+{"ai": "codex"|"gemini"|"claude", "confidence": 0.0-1.0, "reason": "brief reason"}
+
+Task: `;
+
+/**
+ * Classify a task using a lightweight LLM call.
+ * Used as a fallback when keyword scoring is ambiguous.
+ */
+async function classifyWithLLM(
+  task: string,
+  config: RouterConfig
+): Promise<{ ai: string; confidence: number; reason: string } | null> {
+  const prompt = LLM_CLASSIFICATION_PROMPT + task.slice(0, 500);
+
+  return new Promise((resolve) => {
+    const cmd = [...config.llmClassifierCommand];
+    // Replace the empty prompt placeholder with the actual prompt
+    const promptIdx = cmd.indexOf('--prompt');
+    if (promptIdx !== -1 && promptIdx + 1 < cmd.length) {
+      cmd[promptIdx + 1] = prompt;
+    } else {
+      cmd.push('--', prompt);
+    }
+
+    const proc = spawn(cmd[0], cmd.slice(1), {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: config.llmClassifierTimeoutMs,
+    });
+
+    let stdout = '';
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM');
+      resolve(null);
+    }, config.llmClassifierTimeoutMs);
+
+    proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+
+    proc.on('close', () => {
+      clearTimeout(timer);
+      try {
+        // Extract JSON from potentially streamed output
+        const lines = stdout.split('\n').filter(l => l.trim());
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            // Handle stream-json format where content is nested
+            const content = parsed.content || parsed.text || line;
+            const jsonMatch = (typeof content === 'string' ? content : JSON.stringify(content))
+              .match(/\{[^}]*"ai"\s*:\s*"[^"]+"/);
+            if (jsonMatch) {
+              const result = JSON.parse(jsonMatch[0] + (jsonMatch[0].endsWith('}') ? '' : '}'));
+              if (['codex', 'gemini', 'claude'].includes(result.ai)) {
+                resolve({
+                  ai: result.ai,
+                  confidence: Math.min(Number(result.confidence) || 0.7, 1),
+                  reason: String(result.reason || 'llm-classified'),
+                });
+                return;
+              }
+            }
+          } catch { /* try next line */ }
+        }
+        // Try parsing stdout as a whole
+        const directMatch = stdout.match(/\{[^}]*"ai"\s*:\s*"(codex|gemini|claude)"[^}]*\}/);
+        if (directMatch) {
+          const result = JSON.parse(directMatch[0]);
+          resolve({
+            ai: result.ai,
+            confidence: Math.min(Number(result.confidence) || 0.7, 1),
+            reason: String(result.reason || 'llm-classified'),
+          });
+          return;
+        }
+        resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+
+    proc.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+  });
+}
+
+// ============================================
+// Async Routing (with historical + LLM)
+// ============================================
+
+/**
+ * Async version of analyzeTaskForRouting with two enhancements:
+ * 1. Historical success rates adjust keyword scores
+ * 2. Optional LLM classification for ambiguous tasks
+ *
+ * Use this when you can afford async overhead; fall back to
+ * the sync analyzeTaskForRouting for hot paths.
+ */
+export async function analyzeTaskForRoutingAsync(
+  task: string,
+  config?: Partial<RouterConfig>
+): Promise<RoutingResult> {
+  const cfg = { ...DEFAULT_ROUTER_CONFIG, ...config };
+
+  // Step 1: Keyword scoring (same as sync version)
+  let ranking = scoreTask(task);
+
+  // Step 2: Adjust with historical data
+  if (cfg.enableHistoricalAdjustment) {
+    ranking = adjustScoresFromHistory(ranking);
+  }
+
+  const best = ranking[0];
+  const totalScore = ranking.reduce((sum, s) => sum + s.score, 0);
+  const confidence = totalScore > 0 ? best.score / totalScore : 0;
+  const isAmbiguous = confidence < MIN_CONFIDENCE_THRESHOLD || best.score < MIN_RAW_SCORE_THRESHOLD;
+
+  // Step 3: If ambiguous and LLM fallback enabled, classify with LLM
+  if (isAmbiguous && cfg.enableLLMFallback) {
+    const llmResult = await classifyWithLLM(task, cfg);
+    if (llmResult) {
+      return {
+        ai: llmResult.ai,
+        confidence: llmResult.confidence,
+        reasons: [`llm-classified: ${llmResult.reason}`],
+        ranking,
+        cascadeRecommended: false,
+      };
+    }
+  }
+
+  // Step 4: Return keyword-based result (possibly history-adjusted)
+  const selectedAI = isAmbiguous ? 'claude' : best.ai;
   const second = ranking[1];
   const scoreDelta = second ? (best.score - second.score) / Math.max(best.score, 1) : 1;
   const cascadeRecommended = scoreDelta < 0.3 && !isAmbiguous;
