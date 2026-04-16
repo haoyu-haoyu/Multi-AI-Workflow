@@ -22,6 +22,17 @@ import type { CapabilityDescriptor } from '../capabilities/capability-types.js';
 export type PhaseType = 'planning' | 'execution' | 'review' | 'delegation';
 export type AIRole = 'claude' | 'codex' | 'gemini' | 'litellm' | 'auto';
 
+export interface PhaseRetryConfig {
+  /** Max retry attempts (default: 0 = no retry) */
+  maxRetries: number;
+  /** Initial backoff delay in ms (default: 1000) */
+  initialBackoffMs: number;
+  /** Backoff multiplier (default: 2 for exponential) */
+  backoffMultiplier: number;
+  /** Fall back to this AI if all retries fail (default: 'claude') */
+  fallbackAI?: AIRole;
+}
+
 export interface WorkflowPhase {
   /** Phase identifier */
   id: string;
@@ -37,6 +48,8 @@ export interface WorkflowPhase {
   outputs: string[];
   /** Phase-specific configuration */
   config?: Record<string, unknown>;
+  /** Retry and fallback configuration */
+  retry?: PhaseRetryConfig;
 }
 
 /**
@@ -73,6 +86,14 @@ export interface ParallelConfig {
   dependencyAware: boolean;
 }
 
+/** Default retry config applied to delegation/execution phases when not overridden */
+export const DEFAULT_PHASE_RETRY: PhaseRetryConfig = {
+  maxRetries: 2,
+  initialBackoffMs: 1000,
+  backoffMultiplier: 2,
+  fallbackAI: 'claude',
+};
+
 export interface WorkflowDefinition {
   /** Workflow name */
   name: string;
@@ -86,6 +107,8 @@ export interface WorkflowDefinition {
   aiAssignment?: AIAssignment;
   /** Parallel execution configuration */
   parallelConfig?: ParallelConfig;
+  /** Default retry config for all phases (overridable per-phase) */
+  defaultRetry?: PhaseRetryConfig;
 }
 
 export interface TaskDefinition {
@@ -245,11 +268,13 @@ export class WorkflowEngine {
       const layers = this.computeExecutionLayers(workflow.phases);
       const maxConcurrency = workflow.parallelConfig?.maxConcurrency ?? 1;
 
+      const defaultRetry = workflow.defaultRetry ?? DEFAULT_PHASE_RETRY;
+
       for (const layer of layers) {
         if (layer.length === 1 || maxConcurrency <= 1) {
           // Sequential execution
           for (const phase of layer) {
-            const phaseResult = await this.executePhase(phase, session, context, phaseOutputs);
+            const phaseResult = await this.executePhase(phase, session, context, phaseOutputs, defaultRetry);
             tasks.push(...phaseResult.tasks);
             // Store outputs for subsequent phases
             if (phaseResult.success && phaseResult.content) {
@@ -388,38 +413,115 @@ export class WorkflowEngine {
   private static readonly EMPTY_RESULT: PhaseResult = { success: true, tasks: [] };
 
   /**
-   * Execute a workflow phase, injecting accumulated outputs from prior phases.
+   * Dispatch a single phase attempt (no retry logic).
+   */
+  private async dispatchPhase(
+    phase: WorkflowPhase,
+    session: UnifiedSession,
+    context: WorkflowContext,
+    phaseOutputs: PhaseOutputs
+  ): Promise<PhaseResult> {
+    switch (phase.type) {
+      case 'planning':
+        return this.executePlanningPhase(phase, session, context, phaseOutputs);
+      case 'execution':
+        return this.executeExecutionPhase(phase, session, context, phaseOutputs);
+      case 'delegation':
+        return this.executeDelegationPhase(phase, session, context, phaseOutputs);
+      case 'review':
+        return this.executeReviewPhase(phase, session, context, phaseOutputs);
+      default:
+        return WorkflowEngine.EMPTY_RESULT;
+    }
+  }
+
+  /**
+   * Execute a workflow phase with retry and fallback.
+   *
+   * Retry strategy (exponential backoff):
+   *   attempt 1 → fail → wait initialBackoffMs → attempt 2 → fail →
+   *   wait initialBackoffMs * multiplier → ... → fallback to another AI.
+   *
+   * Fallback: if all retries with the original AI fail and a fallbackAI
+   * is configured (and differs from the original), one final attempt is
+   * made with the fallback AI instead of failing the entire workflow.
    */
   private async executePhase(
     phase: WorkflowPhase,
     session: UnifiedSession,
     context: WorkflowContext,
-    phaseOutputs: PhaseOutputs = {}
+    phaseOutputs: PhaseOutputs = {},
+    workflowRetry?: PhaseRetryConfig
   ): Promise<PhaseResult> {
-    try {
-      switch (phase.type) {
-        case 'planning':
-          return this.executePlanningPhase(phase, session, context, phaseOutputs);
+    const retryConfig = phase.retry ?? workflowRetry;
+    const maxRetries = retryConfig?.maxRetries ?? 0;
+    const initialBackoff = retryConfig?.initialBackoffMs ?? 1000;
+    const multiplier = retryConfig?.backoffMultiplier ?? 2;
+    const fallbackAI = retryConfig?.fallbackAI;
+    const logger = getExecutionLogger();
 
-        case 'execution':
-          return this.executeExecutionPhase(phase, session, context, phaseOutputs);
+    let lastError = '';
+    let backoff = initialBackoff;
 
-        case 'delegation':
-          return this.executeDelegationPhase(phase, session, context, phaseOutputs);
-
-        case 'review':
-          return this.executeReviewPhase(phase, session, context, phaseOutputs);
-
-        default:
-          return WorkflowEngine.EMPTY_RESULT;
+    // Attempts with the original AI
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, backoff));
+        backoff = Math.min(backoff * multiplier, 30_000);
       }
-    } catch (error) {
-      return {
-        success: false,
-        tasks: [],
-        error: error instanceof Error ? error.message : 'Unknown phase execution error',
-      };
+
+      try {
+        const result = await this.dispatchPhase(phase, session, context, phaseOutputs);
+        if (result.success) return result;
+        lastError = result.error || 'Phase returned failure';
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : 'Unknown phase execution error';
+      }
+
+      if (attempt < maxRetries) {
+        logger.logPhase(`retry:${phase.name}`, {
+          phaseName: phase.name,
+          phaseType: phase.type,
+          assignedAI: phase.assignedAI || 'unknown',
+          success: false,
+          durationMs: 0,
+          outputLength: 0,
+          error: `Attempt ${attempt + 1} failed: ${lastError}. Retrying in ${backoff}ms...`,
+        });
+      }
     }
+
+    // Fallback: try a different AI if configured and different from original
+    if (fallbackAI && fallbackAI !== phase.assignedAI) {
+      const fallbackPhase: WorkflowPhase = {
+        ...phase,
+        assignedAI: fallbackAI,
+        retry: undefined, // no recursive retry on fallback
+      };
+
+      try {
+        const fallbackResult = await this.dispatchPhase(fallbackPhase, session, context, phaseOutputs);
+        if (fallbackResult.success) {
+          logger.logPhase(`fallback:${phase.name}`, {
+            phaseName: phase.name,
+            phaseType: phase.type,
+            assignedAI: fallbackAI,
+            success: true,
+            durationMs: 0,
+            outputLength: fallbackResult.content?.length ?? 0,
+          });
+          return fallbackResult;
+        }
+      } catch {
+        // Fallback also failed — return original error
+      }
+    }
+
+    return {
+      success: false,
+      tasks: [],
+      error: `Phase ${phase.name} failed after ${maxRetries + 1} attempt(s): ${lastError}`,
+    };
   }
 
   /**
