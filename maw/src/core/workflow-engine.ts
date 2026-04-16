@@ -53,6 +53,18 @@ export interface WorkflowPhase {
 }
 
 /**
+ * Structured phase output with both summary and full content.
+ * Downstream phases receive the summary by default to reduce context size;
+ * full content is available when moaMode is enabled.
+ */
+export interface StructuredPhaseOutput {
+  summary: string;
+  keyDecisions: string[];
+  artifacts: string[];
+  fullOutput: string;
+}
+
+/**
  * Accumulated outputs from completed phases, keyed by output name.
  * Each phase declares `outputs: ['plan', 'analysis']` and the engine
  * stores the phase result content under those keys so subsequent phases
@@ -60,6 +72,13 @@ export interface WorkflowPhase {
  */
 export interface PhaseOutputs {
   [key: string]: string;
+}
+
+/**
+ * Structured outputs storage (parallel to PhaseOutputs).
+ */
+interface StructuredOutputStore {
+  [key: string]: StructuredPhaseOutput;
 }
 
 export interface PhaseResult {
@@ -260,6 +279,7 @@ export class WorkflowEngine {
 
     const tasks: TaskRecord[] = [];
     const phaseOutputs: PhaseOutputs = {};
+    const structuredStore: StructuredOutputStore = {};
     const startTime = Date.now();
     const logger = getExecutionLogger();
 
@@ -276,10 +296,10 @@ export class WorkflowEngine {
           for (const phase of layer) {
             const phaseResult = await this.executePhase(phase, session, context, phaseOutputs, defaultRetry);
             tasks.push(...phaseResult.tasks);
-            // Store outputs for subsequent phases
             if (phaseResult.success && phaseResult.content) {
               for (const outputKey of phase.outputs) {
                 phaseOutputs[outputKey] = phaseResult.content;
+                structuredStore[outputKey] = this.compressPhaseOutput(phaseResult.content, phase.name);
               }
             }
             if (!phaseResult.success && phase.type !== 'review') {
@@ -296,6 +316,7 @@ export class WorkflowEngine {
             if (result.success && result.content) {
               for (const outputKey of layer[i].outputs) {
                 phaseOutputs[outputKey] = result.content;
+                structuredStore[outputKey] = this.compressPhaseOutput(result.content, layer[i].name);
               }
             }
             if (!result.success && layer[i].type !== 'review') {
@@ -732,23 +753,76 @@ export class WorkflowEngine {
   }
 
   /**
+   * Compress a phase's raw output into a structured summary.
+   * Extracts key sections heuristically to reduce context passed downstream.
+   */
+  private compressPhaseOutput(rawOutput: string, phaseName: string): StructuredPhaseOutput {
+    const MAX_SUMMARY_LENGTH = 2000;
+    const lines = rawOutput.split('\n');
+
+    // Extract key decisions: lines starting with numbered items, bullets, or "Decision:"
+    const decisions: string[] = [];
+    const artifacts: string[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/^(?:\d+\.|[-*])\s/.test(trimmed) && trimmed.length > 20 && trimmed.length < 200) {
+        if (decisions.length < 10) decisions.push(trimmed);
+      }
+      // Extract file paths mentioned
+      const fileMatch = trimmed.match(/(?:^|\s)([\w./-]+\.(?:ts|js|py|json|md|yaml|yml|tsx|jsx|css|html))\b/);
+      if (fileMatch && !artifacts.includes(fileMatch[1])) {
+        artifacts.push(fileMatch[1]);
+      }
+    }
+
+    // Build summary: first paragraph + key decisions
+    let summary = '';
+    const firstParagraph = rawOutput.slice(0, MAX_SUMMARY_LENGTH).split('\n\n')[0];
+    summary += `[${phaseName} Summary]\n${firstParagraph}`;
+
+    if (decisions.length > 0) {
+      summary += '\n\nKey points:\n' + decisions.slice(0, 5).join('\n');
+    }
+    if (artifacts.length > 0) {
+      summary += '\n\nReferenced files: ' + artifacts.slice(0, 10).join(', ');
+    }
+
+    return {
+      summary: summary.slice(0, MAX_SUMMARY_LENGTH * 2),
+      keyDecisions: decisions,
+      artifacts,
+      fullOutput: rawOutput,
+    };
+  }
+
+  /**
    * Build context section from accumulated phase outputs.
+   *
+   * By default, uses compressed summaries to keep context manageable.
+   * MoA mode passes full outputs for maximum context.
    *
    * MoA enhancement (Mixture-of-Agents, ICLR 2025 Spotlight):
    * When moaMode is true, passes ALL accumulated outputs to the agent,
-   * not just declared input dependencies. Research shows LLMs produce
-   * better responses when given outputs from other models, even weaker ones.
+   * not just declared input dependencies.
    */
   private buildPhaseContext(
     phaseOutputs: PhaseOutputs,
     inputs: string[],
-    moaMode: boolean = false
+    moaMode: boolean = false,
+    structuredStore?: StructuredOutputStore,
   ): string {
     const sections: string[] = [];
     const keysToInclude = moaMode ? Object.keys(phaseOutputs) : inputs;
+    const useCompressed = !moaMode && structuredStore && Object.keys(structuredStore).length > 0;
 
     for (const key of keysToInclude) {
-      if (phaseOutputs[key]) {
+      if (!phaseOutputs[key]) continue;
+
+      if (useCompressed && structuredStore![key]) {
+        const compressed = structuredStore![key];
+        sections.push(`--- ${key} (compressed) ---\n${this.sanitizePhaseOutput(compressed.summary)}`);
+      } else {
         const sanitized = this.sanitizePhaseOutput(phaseOutputs[key]);
         sections.push(`--- ${key} ---\n${sanitized}`);
       }
@@ -763,9 +837,10 @@ export class WorkflowEngine {
   private buildPlanningPrompt(
     context: WorkflowContext,
     phaseOutputs: PhaseOutputs = {},
-    phase?: WorkflowPhase
+    phase?: WorkflowPhase,
+    structuredStore?: StructuredOutputStore,
   ): string {
-    const priorContext = phase ? this.buildPhaseContext(phaseOutputs, phase.inputs) : '';
+    const priorContext = phase ? this.buildPhaseContext(phaseOutputs, phase.inputs, false, structuredStore) : '';
     return `
 PURPOSE: Generate a detailed implementation plan
 TASK: ${context.task}
@@ -784,11 +859,12 @@ CONSTRAINTS: Maximum 10 tasks, clear dependencies
   private buildDelegationPrompt(
     context: WorkflowContext,
     phase: WorkflowPhase,
-    phaseOutputs: PhaseOutputs = {}
+    phaseOutputs: PhaseOutputs = {},
+    structuredStore?: StructuredOutputStore,
   ): string {
     const config = phase.config || {};
     const moaMode = config.moaMode === true;
-    const priorContext = this.buildPhaseContext(phaseOutputs, phase.inputs, moaMode);
+    const priorContext = this.buildPhaseContext(phaseOutputs, phase.inputs, moaMode, structuredStore);
     return `
 ${config.prompt || context.task}
 
