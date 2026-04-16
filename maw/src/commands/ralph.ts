@@ -28,6 +28,16 @@ interface RalphLoopOptions {
   sandbox: string;
   verbose: boolean;
   delay: number;
+  /** Shell command to verify completion (exit 0 = complete). */
+  verifyCommand?: string;
+}
+
+type CompletionMethod = 'string-match' | 'structured-json' | 'verify-command';
+
+interface CompletionCheck {
+  isComplete: boolean;
+  method: CompletionMethod;
+  summary?: string;
 }
 
 interface LoopState {
@@ -132,8 +142,8 @@ export async function executeRalphLoop(
         const output = await executeAI(options.ai, prompt, options, session.mawSessionId);
         const duration = Date.now() - iterationStart;
 
-        // Check for completion promise
-        const hasCompletionPromise = output.includes(options.completionPromise);
+        // Multi-strategy completion check
+        const completion = await checkCompletion(output, options);
 
         // Record iteration
         const record: IterationRecord = {
@@ -141,22 +151,23 @@ export async function executeRalphLoop(
           timestamp: new Date(),
           output: output.substring(0, 1000),
           duration,
-          hasCompletionPromise,
+          hasCompletionPromise: completion.isComplete,
         };
         currentLoopState.history.push(record);
         currentLoopState.lastOutput = output;
 
-        if (hasCompletionPromise) {
+        if (completion.isComplete) {
           currentLoopState.completed = true;
-          iterationSpinner.succeed(chalk.green(`Iteration ${currentLoopState.iteration} completed - Completion promise found!`));
+          iterationSpinner.succeed(chalk.green(`Iteration ${currentLoopState.iteration} completed - Task done!`));
 
-          // Display completion info
-          console.log(chalk.green('\n✅ COMPLETION PROMISE DETECTED'));
-          console.log(chalk.dim(`   Promise: "${options.completionPromise}"`));
+          console.log(chalk.green('\n✅ COMPLETION DETECTED'));
+          console.log(chalk.dim(`   Method: ${completion.method}`));
+          if (completion.summary) {
+            console.log(chalk.dim(`   Detail: ${completion.summary}`));
+          }
         } else {
           iterationSpinner.succeed(chalk.blue(`Iteration ${currentLoopState.iteration} completed (${(duration / 1000).toFixed(1)}s)`));
 
-          // Show truncated output
           if (options.verbose) {
             console.log(chalk.dim('\n--- Output Preview ---'));
             console.log(output.substring(0, 500) + (output.length > 500 ? '\n...(truncated)' : ''));
@@ -189,6 +200,54 @@ export async function executeRalphLoop(
     process.removeListener('SIGINT', cancelHandler);
     currentLoopState = null;
   }
+}
+
+/**
+ * Multi-strategy completion detection.
+ *
+ * Checks in order of reliability:
+ * 1. Verify command (if configured): runs a shell command, exit 0 = complete
+ * 2. Structured JSON: looks for {"status":"complete"} in output
+ * 3. String match: falls back to the classic completionPromise substring check
+ */
+async function checkCompletion(
+  output: string,
+  options: RalphLoopOptions,
+): Promise<CompletionCheck> {
+  // Strategy 1: Shell verify command (most reliable — uses real system state)
+  if (options.verifyCommand) {
+    try {
+      const { execSync } = await import('child_process');
+      execSync(options.verifyCommand, {
+        cwd: options.cd,
+        timeout: 30_000,
+        stdio: 'pipe',
+      });
+      return { isComplete: true, method: 'verify-command', summary: `"${options.verifyCommand}" exited 0` };
+    } catch {
+      // Command failed (non-zero exit) — not complete yet
+    }
+  }
+
+  // Strategy 2: Structured JSON in output
+  // Look for a JSON object with status: "complete" / "done" / "finished"
+  const jsonPattern = /\{[^{}]*"status"\s*:\s*"(complete|done|finished)"[^{}]*\}/i;
+  const jsonMatch = output.match(jsonPattern);
+  if (jsonMatch) {
+    let summary = '';
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      summary = parsed.summary || parsed.message || '';
+    } catch { /* ignore parse error, the regex match is enough */ }
+    return { isComplete: true, method: 'structured-json', summary };
+  }
+
+  // Strategy 3: Classic string match (backward compatible)
+  if (options.completionPromise && output.includes(options.completionPromise)) {
+    return { isComplete: true, method: 'string-match', summary: options.completionPromise };
+  }
+
+  return { isComplete: false, method: 'string-match' };
 }
 
 /**
