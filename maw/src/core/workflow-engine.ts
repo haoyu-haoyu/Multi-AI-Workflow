@@ -556,6 +556,8 @@ export class WorkflowEngine {
   ): Promise<PhaseResult> {
     const tasks: TaskRecord[] = [];
     const adapter = this.getAdapter(phase.assignedAI || 'claude');
+    const logger = getExecutionLogger();
+    const phaseStart = Date.now();
 
     if (!adapter) {
       return { success: false, tasks, error: 'No adapter available for planning' };
@@ -582,7 +584,6 @@ export class WorkflowEngine {
         taskRecord.status = 'completed';
         taskRecord.result = result.content;
 
-        // Save plan to .task directory (CCW pattern)
         const planPath = safePathInDir(this.taskDir, `IMPL_PLAN-${session.mawSessionId}.json`);
         writeFileSync(planPath, JSON.stringify({
           sessionId: session.mawSessionId,
@@ -590,25 +591,44 @@ export class WorkflowEngine {
           timestamp: new Date().toISOString(),
         }, null, 2));
 
-        // Link session ID if returned
         if (result.sessionId && this.isLinkedSessionProvider(adapter.name)) {
-          await this.sessionManager.linkExternalSession(
-            session,
-            adapter.name,
-            result.sessionId
-          );
+          await this.sessionManager.linkExternalSession(session, adapter.name, result.sessionId);
         }
+
+        logger.logPhase(context.task, {
+          phaseName: phase.name,
+          phaseType: phase.type,
+          assignedAI: adapter.name,
+          success: true,
+          durationMs: Date.now() - phaseStart,
+          outputLength: result.content?.length ?? 0,
+        });
       } else {
         taskRecord.status = 'failed';
+        logger.logPhase(context.task, {
+          phaseName: phase.name,
+          phaseType: phase.type,
+          assignedAI: adapter.name,
+          success: false,
+          durationMs: Date.now() - phaseStart,
+          outputLength: 0,
+          error: result.error,
+        });
         return { success: false, tasks, error: result.error };
       }
     } catch (error) {
       taskRecord.status = 'failed';
-      return {
+      const errorMsg = error instanceof Error ? error.message : 'Planning failed';
+      logger.logPhase(context.task, {
+        phaseName: phase.name,
+        phaseType: phase.type,
+        assignedAI: adapter.name,
         success: false,
-        tasks,
-        error: error instanceof Error ? error.message : 'Planning failed',
-      };
+        durationMs: Date.now() - phaseStart,
+        outputLength: 0,
+        error: errorMsg,
+      });
+      return { success: false, tasks, error: errorMsg };
     }
 
     return { success: true, tasks, content: taskRecord.result };
@@ -627,6 +647,8 @@ export class WorkflowEngine {
     const tasks: TaskRecord[] = [];
     const assignedAI = phase.assignedAI || 'codex';
     const adapter = this.getAdapter(assignedAI);
+    const logger = getExecutionLogger();
+    const phaseStart = Date.now();
 
     if (!adapter) {
       return { success: false, tasks, error: `No adapter for ${assignedAI}` };
@@ -642,10 +664,8 @@ export class WorkflowEngine {
     tasks.push(taskRecord);
 
     try {
-      // Phase 1: Context retrieval (using CodexLens if available)
       const relevantCode = context.relevantFiles || [];
 
-      // Phase 2-3: Execute with external AI (read-only sandbox)
       const result = await adapter.execute({
         prompt: this.buildDelegationPrompt(context, phase, phaseOutputs),
         workingDir: context.projectRoot,
@@ -658,27 +678,44 @@ export class WorkflowEngine {
         taskRecord.status = 'completed';
         taskRecord.result = result.content;
 
-        // Save SESSION_ID for multi-turn support
         if (result.sessionId && this.isLinkedSessionProvider(assignedAI)) {
-          await this.sessionManager.linkExternalSession(
-            session,
-            assignedAI,
-            result.sessionId
-          );
+          await this.sessionManager.linkExternalSession(session, assignedAI, result.sessionId);
         }
 
-        // Phase 4-5: Claude would refactor and review (handled in subsequent phases)
+        logger.logPhase(context.task, {
+          phaseName: phase.name,
+          phaseType: phase.type,
+          assignedAI,
+          success: true,
+          durationMs: Date.now() - phaseStart,
+          outputLength: result.content?.length ?? 0,
+        });
       } else {
         taskRecord.status = 'failed';
+        logger.logPhase(context.task, {
+          phaseName: phase.name,
+          phaseType: phase.type,
+          assignedAI,
+          success: false,
+          durationMs: Date.now() - phaseStart,
+          outputLength: 0,
+          error: result.error,
+        });
         return { success: false, tasks, error: result.error };
       }
     } catch (error) {
       taskRecord.status = 'failed';
-      return {
+      const errorMsg = error instanceof Error ? error.message : 'Delegation failed';
+      logger.logPhase(context.task, {
+        phaseName: phase.name,
+        phaseType: phase.type,
+        assignedAI,
         success: false,
-        tasks,
-        error: error instanceof Error ? error.message : 'Delegation failed',
-      };
+        durationMs: Date.now() - phaseStart,
+        outputLength: 0,
+        error: errorMsg,
+      });
+      return { success: false, tasks, error: errorMsg };
     }
 
     return { success: true, tasks, content: taskRecord.result };
