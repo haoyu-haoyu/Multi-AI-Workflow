@@ -18,6 +18,7 @@ import { SessionManager } from '../core/session-manager.js';
 import { loadConfig } from '../config/loader.js';
 import { analyzeTaskForRouting } from '../core/semantic-router.js';
 import { validatePathWithinBase } from '../core/skill-registry.js';
+import { BridgePool } from '../core/bridge-pool.js';
 
 interface RalphLoopOptions {
   maxIterations: number;
@@ -240,110 +241,45 @@ async function executeClaudeNative(prompt: string, options: RalphLoopOptions): P
 }
 
 /**
- * Execute Codex via bridge
+ * Execute Codex via BridgePool (daemon mode, process reuse).
+ * Falls back to one-shot spawn if daemon unavailable.
  */
 async function executeCodexBridge(
   prompt: string,
   options: RalphLoopOptions,
   sessionId: string
 ): Promise<string> {
-  const bridgePath = path.join(
-    process.env.HOME || homedir(),
-    '.maw/skills/collaborating-with-codex/scripts/codex_bridge.py'
-  );
-
-  // Check if bridge exists
-  if (!fs.existsSync(bridgePath)) {
-    // Fallback to maw_bridges
-    const fallbackPath = path.join(
-      process.env.HOME || homedir(),
-      '.local/lib/python3.11/site-packages/maw_bridges/codex_bridge.py'
-    );
-    if (fs.existsSync(fallbackPath)) {
-      return await executePythonBridge(fallbackPath, prompt, options, sessionId);
-    }
-    throw new Error('Codex bridge not found. Run: pip install -e bridges/');
+  const pool = BridgePool.getInstance();
+  const response = await pool.send('codex', {
+    prompt,
+    cd: options.cd,
+    session_id: sessionId,
+    sandbox: options.sandbox || 'workspace-write',
+  });
+  if (response.success) {
+    return response.agent_messages || '';
   }
-
-  return await executePythonBridge(bridgePath, prompt, options, sessionId);
+  throw new Error(response.error || 'Codex bridge returned failure');
 }
 
 /**
- * Execute Gemini via bridge
+ * Execute Gemini via BridgePool (daemon mode, process reuse).
  */
 async function executeGeminiBridge(
   prompt: string,
   options: RalphLoopOptions,
   sessionId: string
 ): Promise<string> {
-  const bridgePath = path.join(
-    process.env.HOME || homedir(),
-    '.maw/skills/collaborating-with-gemini/scripts/gemini_bridge.py'
-  );
-
-  if (!fs.existsSync(bridgePath)) {
-    throw new Error('Gemini bridge not found. Check ~/.maw/skills/collaborating-with-gemini/');
-  }
-
-  return await executePythonBridge(bridgePath, prompt, options, sessionId);
-}
-
-/**
- * Execute Python bridge script
- */
-const BRIDGE_TIMEOUT_MS = 120_000;
-
-async function executePythonBridge(
-  bridgePath: string,
-  prompt: string,
-  options: RalphLoopOptions,
-  sessionId: string
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      bridgePath,
-      '--cd', options.cd,
-      '--PROMPT', prompt,
-      '--session', sessionId,
-    ];
-
-    const proc = spawn('python', args, {
-      cwd: options.cd,
-      env: { ...process.env },
-    });
-
-    // Enforce timeout to prevent hanging on network issues or infinite loops
-    const timer = setTimeout(() => {
-      proc.kill('SIGTERM');
-      setTimeout(() => { if (!proc.killed) proc.kill('SIGKILL'); }, 5000);
-      reject(new Error(`Bridge timed out after ${BRIDGE_TIMEOUT_MS / 1000}s`));
-    }, BRIDGE_TIMEOUT_MS);
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve(stdout);
-      } else {
-        reject(new Error(stderr || `Bridge exited with code ${code}`));
-      }
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
+  const pool = BridgePool.getInstance();
+  const response = await pool.send('gemini', {
+    prompt,
+    cd: options.cd,
+    session_id: sessionId,
   });
+  if (response.success) {
+    return response.agent_messages || '';
+  }
+  throw new Error(response.error || 'Gemini bridge returned failure');
 }
 
 /**
